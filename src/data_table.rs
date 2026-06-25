@@ -73,7 +73,6 @@ where
     divider_grab: f32,
     divider_width: f32,
     indent_guide_width: f32,
-    scroll_line_height: f32,
     font_ui: Font,
     font_editor: Font,
     active_row: Option<usize>,
@@ -105,7 +104,6 @@ where
             divider_grab: DEFAULT_DIVIDER_GRAB,
             divider_width: DEFAULT_DIVIDER_WIDTH,
             indent_guide_width: DEFAULT_INDENT_GUIDE_WIDTH,
-            scroll_line_height: DEFAULT_ROW_HEIGHT,
             font_ui: Font::DEFAULT,
             font_editor: Font::MONOSPACE,
             active_row: None,
@@ -189,12 +187,6 @@ where
         self
     }
 
-    /// Sets the pixel distance scrolled per wheel line event.
-    pub fn scroll_line_height(mut self, scroll_line_height: f32) -> Self {
-        self.scroll_line_height = scroll_line_height;
-        self
-    }
-
     /// Sets the font used for [`FontKind::Ui`](crate::data_table::cell::FontKind::Ui) cells and headers.
     pub fn font_ui(mut self, font: Font) -> Self {
         self.font_ui = font;
@@ -250,32 +242,26 @@ where
         (bounds.height - self.header_height).max(0.0)
     }
 
-    /// The persisted basis widths, falling back to the columns' preferred widths
-    /// when the stored basis is stale (e.g. the column count changed).
-    fn basis_for(&self, state: &State) -> Vec<f32> {
-        if state.basis.len() == self.columns.len() {
+    /// The per-frame layout metrics shared by drawing and event handling.
+    fn metrics(&self, state: &State, viewport_width: f32) -> Metrics {
+        let mins: Vec<f32> = self.columns.iter().map(|column| column.min_width).collect();
+        let basis = if state.basis.len() == self.columns.len() {
             state.basis.clone()
         } else {
             self.columns.iter().map(|column| column.width).collect()
-        }
-    }
-
-    /// The per-frame layout metrics shared by drawing and event handling.
-    fn metrics(&self, state: &State) -> Metrics {
-        let mins: Vec<f32> = self.columns.iter().map(|column| column.min_width).collect();
-        let basis = self.basis_for(state);
+        };
         Metrics {
-            widths: geometry::fit_widths(&basis, &mins, state.viewport.width),
-            content_width: geometry::content_width(&mins, state.viewport.width),
+            widths: geometry::fit_widths(&basis, &mins, viewport_width),
+            content_width: geometry::content_width(&mins, viewport_width),
             content_height: self.rows.len() as f32 * self.row_height,
             mins,
         }
     }
 
     /// The clamped scroll offsets for the given metrics.
-    fn scroll_offsets(&self, state: &State, metrics: &Metrics) -> (f32, f32) {
-        let body_height = (state.viewport.height - self.header_height).max(0.0);
-        let max_x = geometry::max_scroll_x(metrics.content_width, state.viewport.width);
+    fn scroll_offsets(&self, state: &State, metrics: &Metrics, viewport: Size) -> (f32, f32) {
+        let body_height = (viewport.height - self.header_height).max(0.0);
+        let max_x = geometry::max_scroll_x(metrics.content_width, viewport.width);
         let max_y = geometry::max_scroll(self.rows.len(), self.row_height, body_height);
         (
             state.scroll_x.clamp(0.0, max_x),
@@ -391,7 +377,6 @@ struct Metrics {
 struct State {
     scroll_x: f32,
     scroll_y: f32,
-    viewport: Size,
     hovered_row: Option<usize>,
     hovered_thumb: Option<Axis>,
     shift_held: bool,
@@ -409,7 +394,6 @@ impl Default for State {
         Self {
             scroll_x: 0.0,
             scroll_y: 0.0,
-            viewport: Size::ZERO,
             hovered_row: None,
             hovered_thumb: None,
             shift_held: false,
@@ -500,6 +484,13 @@ impl Painter<'_> {
     /// Draws a full row: its background fill, dividers-aware cells, chevron, and
     /// indent guides, all in the given [`Status`].
     fn row(&self, frame: &mut Frame, row: &Row, row_index: usize, top_y: f32, status: Status) {
+        debug_assert!(
+            row.cells.len() == self.columns.len(),
+            "row {} has {} cells but table has {} columns",
+            row_index,
+            row.cells.len(),
+            self.columns.len()
+        );
         if let Some(background) = self.style.row_background(status, row_index) {
             frame.fill_rectangle(
                 Point::new(0.0, top_y),
@@ -748,8 +739,8 @@ where
         let state = tree.state.downcast_ref::<State>();
         let resolved = <Theme as Catalog>::style(theme, &self.class, Status::Regular);
 
-        let metrics = self.metrics(state);
-        let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics);
+        let metrics = self.metrics(state, bounds.width);
+        let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics, bounds.size());
 
         self.reconcile_caches(state, bounds.size(), &metrics, scroll_x, scroll_y);
 
@@ -820,11 +811,10 @@ where
     ) {
         let bounds = layout.bounds();
         let state = tree.state.downcast_mut::<State>();
-        state.viewport = bounds.size();
         state.ensure_basis(&self.columns);
 
-        let metrics = self.metrics(state);
-        let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics);
+        let metrics = self.metrics(state, bounds.width);
+        let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics, bounds.size());
 
         match event {
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
@@ -836,7 +826,7 @@ where
                 }
                 let (mut dx, mut dy) = match delta {
                     mouse::ScrollDelta::Lines { x, y } => {
-                        (x * self.scroll_line_height, y * self.scroll_line_height)
+                        (x * self.row_height, y * self.row_height)
                     }
                     mouse::ScrollDelta::Pixels { x, y } => (*x, *y),
                 };
@@ -855,6 +845,7 @@ where
                     state.scroll_y = next_y;
                     shell.capture_event();
                     shell.request_redraw();
+                    self.handle_hover(state, &metrics, next_x, next_y, bounds, cursor, shell);
                 }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => match &mut state.drag {
@@ -871,6 +862,7 @@ where
                         geometry::resize_columns(snapshot, &metrics.mins, *border, desired);
                     *snapshot = widths.clone();
                     state.basis = widths;
+                    shell.capture_event();
                     shell.request_redraw();
                 }
                 Some(Drag::Scroll { axis, grab }) => {
@@ -896,6 +888,7 @@ where
                             Axis::Horizontal => state.scroll_x = offset,
                         }
                         state.hovered_thumb = Some(axis);
+                        shell.capture_event();
                         shell.request_redraw();
                     }
                 }
@@ -1040,8 +1033,8 @@ where
             return mouse::Interaction::None;
         };
 
-        let metrics = self.metrics(state);
-        let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics);
+        let metrics = self.metrics(state, bounds.width);
+        let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics, bounds.size());
 
         let (vertical, horizontal) = self.scrollbars(bounds.size(), &metrics, scroll_x, scroll_y);
         let over_thumb = vertical.is_some_and(|bar| bar.thumb.contains(position))
@@ -1296,6 +1289,9 @@ where
             if let Some(index) = hovered {
                 let top_y = self.header_height + index as f32 * self.row_height - scroll_y;
                 painter.row(frame, &self.rows[index], index, top_y, Status::Hovered);
+            }
+            if active.is_some() || hovered.is_some() {
+                painter.dividers(frame, self.header_height, self.body_height(bounds));
             }
         });
     }

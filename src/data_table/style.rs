@@ -48,7 +48,9 @@ pub struct Style {
     pub text_accent: Color,
     /// [`TextRole::Muted`] color on a regular row.
     pub text_muted: Color,
-    /// Text color used for every role on a hovered/active row.
+    /// Text color used for every text role on a hovered row.
+    pub text_on_hover: Color,
+    /// Text color used for every text role on the active row.
     pub text_on_active: Color,
     /// Scrollbar track (the groove the thumb slides within).
     pub scrollbar_track: Color,
@@ -65,7 +67,8 @@ impl Style {
     /// accent or primary cell stays legible against the highlight fill.
     pub fn text_color(&self, role: TextRole, status: Status) -> Color {
         match status {
-            Status::Hovered | Status::Active => self.text_on_active,
+            Status::Hovered => self.text_on_hover,
+            Status::Active => self.text_on_active,
             Status::Regular => match role {
                 TextRole::Primary => self.text_primary,
                 TextRole::Accent => self.text_accent,
@@ -132,6 +135,7 @@ pub fn default(theme: &Theme, _status: Status) -> Style {
         text_primary: palette.background.base.text,
         text_accent: palette.primary.base.color,
         text_muted: muted(palette.background.base.text, 0.6),
+        text_on_hover: palette.background.weak.text,
         text_on_active: palette.primary.strong.text,
         scrollbar_track: palette.background.weak.color,
         scrollbar_thumb: muted(palette.background.strong.color, 0.7),
