@@ -583,7 +583,16 @@ impl Painter<'_> {
             CellAlign::Center => (left + width / 2.0, TextAlignment::Center),
             CellAlign::End => (left + width - self.cell_padding_x, TextAlignment::Right),
         };
-        self.text(frame, cell, x, inner, alignment, center_y, status, font_override);
+        self.text(
+            frame,
+            cell,
+            x,
+            inner,
+            alignment,
+            center_y,
+            status,
+            font_override,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -695,7 +704,6 @@ fn draw_chevron(
     });
     frame.fill(&path, color);
 }
-
 
 impl<'a, Message, Theme> Widget<Message, Theme, iced::Renderer> for DataTable<'a, Message, Theme>
 where
@@ -921,6 +929,18 @@ where
                         grab: position.x - bar.thumb.x,
                     });
                     state.hovered_thumb = Some(Axis::Horizontal);
+                    shell.capture_event();
+                    return;
+                }
+                if let Some(bar) = vertical
+                    && bar.track.contains(position)
+                {
+                    shell.capture_event();
+                    return;
+                }
+                if let Some(bar) = horizontal
+                    && bar.track.contains(position)
+                {
                     shell.capture_event();
                     return;
                 }
