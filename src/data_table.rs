@@ -935,13 +935,33 @@ where
                 if let Some(bar) = vertical
                     && bar.track.contains(position)
                 {
+                    let thumb_half = bar.thumb.height / 2.0;
+                    let lead = position.y - thumb_half;
+                    state.scroll_y =
+                        bar.offset_for_thumb(Axis::Vertical, metrics.content_height, lead);
+                    state.drag = Some(Drag::Scroll {
+                        axis: Axis::Vertical,
+                        grab: thumb_half,
+                    });
+                    state.hovered_thumb = Some(Axis::Vertical);
                     shell.capture_event();
+                    shell.request_redraw();
                     return;
                 }
                 if let Some(bar) = horizontal
                     && bar.track.contains(position)
                 {
+                    let thumb_half = bar.thumb.width / 2.0;
+                    let lead = position.x - thumb_half;
+                    state.scroll_x =
+                        bar.offset_for_thumb(Axis::Horizontal, metrics.content_width, lead);
+                    state.drag = Some(Drag::Scroll {
+                        axis: Axis::Horizontal,
+                        grab: thumb_half,
+                    });
+                    state.hovered_thumb = Some(Axis::Horizontal);
                     shell.capture_event();
+                    shell.request_redraw();
                     return;
                 }
 
