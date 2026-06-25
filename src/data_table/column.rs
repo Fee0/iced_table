@@ -1,5 +1,7 @@
 //! Column definitions for [`DataTable`](crate::DataTable).
 
+use iced::Font;
+
 /// Default preferred width of a freshly created column.
 const DEFAULT_WIDTH: f32 = 120.0;
 /// Default minimum width — a real floor so a column can never collapse away.
@@ -26,6 +28,12 @@ pub struct Column {
     /// Usually the first column. The widget draws the affordance here; folder
     /// semantics remain a consumer concern.
     pub tree_column: bool,
+    /// Font override for every cell and the header in this column.
+    ///
+    /// When `None` the table falls back to the `font_ui` / `font_editor` fonts
+    /// configured on [`DataTable`](crate::DataTable) based on each cell's
+    /// [`FontKind`](crate::data_table::cell::FontKind).
+    pub font: Option<Font>,
 }
 
 impl Column {
@@ -37,6 +45,7 @@ impl Column {
             min_width: DEFAULT_MIN_WIDTH,
             align: CellAlign::Start,
             tree_column: false,
+            font: None,
         }
     }
 
@@ -61,6 +70,15 @@ impl Column {
     /// Marks this column as the tree column (indent + chevron host).
     pub fn tree_column(mut self, tree_column: bool) -> Self {
         self.tree_column = tree_column;
+        self
+    }
+
+    /// Sets a font override for every cell and the header in this column.
+    ///
+    /// Overrides the table-level `font_ui` / `font_editor` fallbacks. Bold
+    /// weight is still applied on top when the cell requests it.
+    pub fn font(mut self, font: Font) -> Self {
+        self.font = Some(font);
         self
     }
 }

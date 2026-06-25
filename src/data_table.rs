@@ -74,6 +74,8 @@ where
     divider_width: f32,
     indent_guide_width: f32,
     scroll_line_height: f32,
+    font_ui: Font,
+    font_editor: Font,
     active_row: Option<usize>,
     revision: u64,
     on_row_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
@@ -104,6 +106,8 @@ where
             divider_width: DEFAULT_DIVIDER_WIDTH,
             indent_guide_width: DEFAULT_INDENT_GUIDE_WIDTH,
             scroll_line_height: DEFAULT_ROW_HEIGHT,
+            font_ui: Font::DEFAULT,
+            font_editor: Font::MONOSPACE,
             active_row: None,
             revision: 0,
             on_row_press: None,
@@ -188,6 +192,18 @@ where
     /// Sets the pixel distance scrolled per wheel line event.
     pub fn scroll_line_height(mut self, scroll_line_height: f32) -> Self {
         self.scroll_line_height = scroll_line_height;
+        self
+    }
+
+    /// Sets the font used for [`FontKind::Ui`](crate::data_table::cell::FontKind::Ui) cells and headers.
+    pub fn font_ui(mut self, font: Font) -> Self {
+        self.font_ui = font;
+        self
+    }
+
+    /// Sets the font used for [`FontKind::Editor`](crate::data_table::cell::FontKind::Editor) cells.
+    pub fn font_editor(mut self, font: Font) -> Self {
+        self.font_editor = font;
         self
     }
 
@@ -476,6 +492,8 @@ struct Painter<'p> {
     chevron_glyph: f32,
     divider_width: f32,
     indent_guide_width: f32,
+    font_ui: Font,
+    font_editor: Font,
 }
 
 impl Painter<'_> {
@@ -505,6 +523,7 @@ impl Painter<'_> {
                     width,
                     center_y,
                     status,
+                    column.font,
                 );
             }
         }
@@ -542,6 +561,7 @@ impl Painter<'_> {
             TextAlignment::Left,
             center_y,
             status,
+            self.columns[index].font,
         );
     }
 
@@ -555,6 +575,7 @@ impl Painter<'_> {
         width: f32,
         center_y: f32,
         status: Status,
+        font_override: Option<Font>,
     ) {
         let inner = (width - 2.0 * self.cell_padding_x).max(0.0);
         let (x, alignment) = match align {
@@ -562,7 +583,7 @@ impl Painter<'_> {
             CellAlign::Center => (left + width / 2.0, TextAlignment::Center),
             CellAlign::End => (left + width - self.cell_padding_x, TextAlignment::Right),
         };
-        self.text(frame, cell, x, inner, alignment, center_y, status);
+        self.text(frame, cell, x, inner, alignment, center_y, status, font_override);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -575,6 +596,7 @@ impl Painter<'_> {
         alignment: TextAlignment,
         center_y: f32,
         status: Status,
+        font_override: Option<Font>,
     ) {
         let Cell::Text {
             text,
@@ -585,12 +607,21 @@ impl Painter<'_> {
         else {
             return;
         };
+        let font = match font_override {
+            Some(mut f) => {
+                if *weight == Weight::Bold {
+                    f.weight = font::Weight::Bold;
+                }
+                f
+            }
+            None => self.font_for(*font_kind, *weight),
+        };
         frame.fill_text(Text {
             content: text.to_string(),
             position: Point::new(x, center_y),
             color: self.style.text_color(*role, status),
             size: Pixels(self.text_size),
-            font: font_for(*font_kind, *weight),
+            font,
             align_x: alignment,
             align_y: Vertical::Center,
             max_width,
@@ -625,6 +656,17 @@ impl Painter<'_> {
     fn total_width(&self) -> f32 {
         self.widths.iter().sum()
     }
+
+    fn font_for(&self, kind: FontKind, weight: Weight) -> Font {
+        let mut resolved = match kind {
+            FontKind::Ui => self.font_ui,
+            FontKind::Editor => self.font_editor,
+        };
+        if weight == Weight::Bold {
+            resolved.weight = font::Weight::Bold;
+        }
+        resolved
+    }
 }
 
 /// Draws a filled chevron triangle centered vertically on `center_y`.
@@ -654,17 +696,6 @@ fn draw_chevron(
     frame.fill(&path, color);
 }
 
-/// Resolves a [`FontKind`] and [`Weight`] to a concrete [`Font`].
-fn font_for(kind: FontKind, weight: Weight) -> Font {
-    let mut resolved = match kind {
-        FontKind::Ui => Font::DEFAULT,
-        FontKind::Editor => Font::MONOSPACE,
-    };
-    if weight == Weight::Bold {
-        resolved.weight = font::Weight::Bold;
-    }
-    resolved
-}
 
 impl<'a, Message, Theme> Widget<Message, Theme, iced::Renderer> for DataTable<'a, Message, Theme>
 where
@@ -726,6 +757,8 @@ where
             chevron_glyph: self.chevron_glyph,
             divider_width: self.divider_width,
             indent_guide_width: self.indent_guide_width,
+            font_ui: self.font_ui,
+            font_editor: self.font_editor,
         };
 
         let header = state.cache_header.draw(renderer, bounds.size(), |frame| {
@@ -1140,6 +1173,7 @@ where
                     width,
                     center_y,
                     Status::Regular,
+                    column.font,
                 );
             }
 
