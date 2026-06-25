@@ -50,6 +50,12 @@ pub struct Style {
     pub text_muted: Color,
     /// Text color used for every role on a hovered/active row.
     pub text_on_active: Color,
+    /// Scrollbar track (the groove the thumb slides within).
+    pub scrollbar_track: Color,
+    /// Scrollbar thumb at rest.
+    pub scrollbar_thumb: Color,
+    /// Scrollbar thumb while hovered or dragged.
+    pub scrollbar_thumb_hover: Color,
 }
 
 impl Style {
@@ -127,6 +133,9 @@ pub fn default(theme: &Theme, _status: Status) -> Style {
         text_accent: palette.primary.base.color,
         text_muted: muted(palette.background.base.text, 0.6),
         text_on_active: palette.primary.strong.text,
+        scrollbar_track: palette.background.weak.color,
+        scrollbar_thumb: muted(palette.background.strong.color, 0.7),
+        scrollbar_thumb_hover: palette.background.strong.color,
     }
 }
 

@@ -1,18 +1,26 @@
 //! Column definitions for [`DataTable`](crate::DataTable).
 
+/// Default preferred width of a freshly created column.
+const DEFAULT_WIDTH: f32 = 120.0;
+/// Default minimum width — a real floor so a column can never collapse away.
+const DEFAULT_MIN_WIDTH: f32 = 40.0;
+
 /// A single table column, supplied fresh by the consumer every frame.
+///
+/// `width` is only a *preferred* size: the widget owns the live column widths
+/// (it persists them across the per-frame rebuild and adjusts them as the user
+/// drags the header dividers), so changing `width` after the first layout has no
+/// effect unless the column *count* changes.
 #[derive(Debug, Clone)]
 pub struct Column {
     /// Text drawn in the header cell.
     pub header: String,
-    /// How the column claims horizontal space.
-    pub width: ColumnWidth,
+    /// Preferred pixel width, used to seed the widget's live width.
+    pub width: f32,
     /// Lower bound the column is never shrunk below (also clamps resizing).
     pub min_width: f32,
     /// Horizontal alignment of the cell contents.
     pub align: CellAlign,
-    /// Whether the divider on this column's right edge can be dragged to resize it.
-    pub resizable: bool,
     /// Whether this column hosts the indent guides and the expand/collapse glyph.
     ///
     /// Usually the first column. The widget draws the affordance here; folder
@@ -21,21 +29,20 @@ pub struct Column {
 }
 
 impl Column {
-    /// Creates a [`ColumnWidth::Fill`] column with sensible defaults.
+    /// Creates a column with sensible default widths.
     pub fn new(header: impl Into<String>) -> Self {
         Self {
             header: header.into(),
-            width: ColumnWidth::Fill,
-            min_width: 0.0,
+            width: DEFAULT_WIDTH,
+            min_width: DEFAULT_MIN_WIDTH,
             align: CellAlign::Start,
-            resizable: false,
             tree_column: false,
         }
     }
 
-    /// Sets a fixed pixel width.
-    pub fn fixed(mut self, width: f32) -> Self {
-        self.width = ColumnWidth::Fixed(width);
+    /// Sets the preferred pixel width.
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = width;
         self
     }
 
@@ -51,26 +58,11 @@ impl Column {
         self
     }
 
-    /// Marks the column's right divider as draggable.
-    pub fn resizable(mut self, resizable: bool) -> Self {
-        self.resizable = resizable;
-        self
-    }
-
     /// Marks this column as the tree column (indent + chevron host).
     pub fn tree_column(mut self, tree_column: bool) -> Self {
         self.tree_column = tree_column;
         self
     }
-}
-
-/// How a column claims horizontal space.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ColumnWidth {
-    /// Shares leftover space equally with the other `Fill` columns.
-    Fill,
-    /// Occupies a fixed number of pixels.
-    Fixed(f32),
 }
 
 /// Horizontal alignment of a cell's contents within its column.

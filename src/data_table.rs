@@ -3,12 +3,13 @@
 //! See the [crate] documentation for the overall design. This module holds the
 //! [`DataTable`] widget itself: its builder, persistent [`State`], and the
 //! [`advanced::Widget`](iced::advanced::Widget) implementation that owns layout,
-//! virtualization, column resizing, and hover/active highlighting.
+//! virtualization, column resizing, scrolling, and hover/active highlighting.
 
 pub mod cell;
 pub mod column;
 mod geometry;
 pub mod row;
+mod scrollbar;
 pub mod style;
 
 use std::cell::RefCell;
@@ -23,6 +24,7 @@ use iced::advanced::renderer;
 use iced::advanced::text::Alignment as TextAlignment;
 use iced::advanced::widget::{Tree, tree};
 use iced::alignment::Vertical;
+use iced::keyboard;
 use iced::mouse;
 use iced::widget::canvas::{Cache, Frame, Path, Text};
 use iced::{Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size, Vector, font};
@@ -30,6 +32,7 @@ use iced::{Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size, 
 use crate::data_table::cell::{Cell, FontKind, TextRole, Weight};
 use crate::data_table::column::{CellAlign, Column};
 use crate::data_table::row::{Row, Toggle};
+use crate::data_table::scrollbar::{Axis, Scrollbar};
 use crate::data_table::style::{Catalog, Status, Style, StyleFn};
 
 const DEFAULT_ROW_HEIGHT: f32 = 24.0;
@@ -42,6 +45,7 @@ const CHEVRON_BOX: f32 = 16.0;
 const CHEVRON_GLYPH: f32 = 8.0;
 const DIVIDER_WIDTH: f32 = 1.0;
 const INDENT_GUIDE_WIDTH: f32 = 1.0;
+const SCROLLBAR_THICKNESS: f32 = 10.0;
 
 /// One scrolled wheel line, in pixels.
 const SCROLL_LINE_HEIGHT: f32 = DEFAULT_ROW_HEIGHT;
@@ -50,8 +54,9 @@ const SCROLL_LINE_HEIGHT: f32 = DEFAULT_ROW_HEIGHT;
 ///
 /// The table is rebuilt every frame from consumer-provided columns and rows and
 /// identifies rows/columns purely by index; the consumer maps an index back to
-/// its own domain.
-#[allow(clippy::type_complexity)]
+/// its own domain. The widget owns the live column widths (seeded from each
+/// column's preferred `width`) and adjusts them as the header dividers are
+/// dragged.
 pub struct DataTable<'a, Message, Theme = iced::Theme>
 where
     Theme: Catalog,
@@ -66,7 +71,6 @@ where
     on_row_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
     on_toggle_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
     on_hover: Option<Box<dyn Fn(Option<usize>) -> Message + 'a>>,
-    on_column_resize: Option<Box<dyn Fn(usize, f32) -> Message + 'a>>,
     class: Theme::Class<'a>,
 }
 
@@ -87,7 +91,6 @@ where
             on_row_press: None,
             on_toggle_press: None,
             on_hover: None,
-            on_column_resize: None,
             class: Theme::default(),
         }
     }
@@ -140,12 +143,6 @@ where
         self
     }
 
-    /// Sets the callback fired while a column divider is dragged.
-    pub fn on_column_resize(mut self, callback: impl Fn(usize, f32) -> Message + 'a) -> Self {
-        self.on_column_resize = Some(Box::new(callback));
-        self
-    }
-
     /// Sets the style.
     pub fn style(mut self, style: impl Fn(&Theme, Status) -> Style + 'a) -> Self
     where
@@ -159,12 +156,104 @@ where
         (bounds.height - self.header_height).max(0.0)
     }
 
+    /// The persisted basis widths, falling back to the columns' preferred widths
+    /// when the stored basis is stale (e.g. the column count changed).
+    fn basis_for(&self, state: &State) -> Vec<f32> {
+        if state.basis.len() == self.columns.len() {
+            state.basis.clone()
+        } else {
+            self.columns.iter().map(|column| column.width).collect()
+        }
+    }
+
+    /// The per-frame layout metrics shared by drawing and event handling.
+    fn metrics(&self, state: &State) -> Metrics {
+        let mins: Vec<f32> = self.columns.iter().map(|column| column.min_width).collect();
+        let basis = self.basis_for(state);
+        Metrics {
+            widths: geometry::fit_widths(&basis, &mins, state.viewport.width),
+            content_width: geometry::content_width(&mins, state.viewport.width),
+            content_height: self.rows.len() as f32 * self.row_height,
+            mins,
+        }
+    }
+
+    /// The clamped scroll offsets for the given metrics.
+    fn scroll_offsets(&self, state: &State, metrics: &Metrics) -> (f32, f32) {
+        let body_height = (state.viewport.height - self.header_height).max(0.0);
+        let max_x = geometry::max_scroll_x(metrics.content_width, state.viewport.width);
+        let max_y = geometry::max_scroll(self.rows.len(), self.row_height, body_height);
+        (
+            state.scroll_x.clamp(0.0, max_x),
+            state.scroll_y.clamp(0.0, max_y),
+        )
+    }
+
+    /// The resolved vertical and horizontal scrollbars, each present only when
+    /// its axis overflows. Coordinates are widget-local (origin at the top-left).
+    fn scrollbars(
+        &self,
+        size: Size,
+        metrics: &Metrics,
+        scroll_x: f32,
+        scroll_y: f32,
+    ) -> (Option<Scrollbar>, Option<Scrollbar>) {
+        let body_height = (size.height - self.header_height).max(0.0);
+        let v_needed = scrollbar::visible(metrics.content_height, body_height);
+        let h_needed = scrollbar::visible(metrics.content_width, size.width);
+
+        let v_height = body_height - if h_needed { SCROLLBAR_THICKNESS } else { 0.0 };
+        let h_width = size.width - if v_needed { SCROLLBAR_THICKNESS } else { 0.0 };
+
+        let vertical = v_needed
+            .then(|| {
+                Scrollbar::new(
+                    Axis::Vertical,
+                    Rectangle {
+                        x: size.width - SCROLLBAR_THICKNESS,
+                        y: self.header_height,
+                        width: SCROLLBAR_THICKNESS,
+                        height: v_height,
+                    },
+                    metrics.content_height,
+                    scroll_y,
+                    scrollbar::MIN_THUMB,
+                )
+            })
+            .flatten();
+        let horizontal = h_needed
+            .then(|| {
+                Scrollbar::new(
+                    Axis::Horizontal,
+                    Rectangle {
+                        x: 0.0,
+                        y: size.height - SCROLLBAR_THICKNESS,
+                        width: h_width,
+                        height: SCROLLBAR_THICKNESS,
+                    },
+                    metrics.content_width,
+                    scroll_x,
+                    scrollbar::MIN_THUMB,
+                )
+            })
+            .flatten();
+
+        (vertical, horizontal)
+    }
+
+    /// Whether the columns currently have slack to redistribute, i.e. the
+    /// viewport is wide enough to honor every minimum width.
+    fn columns_resizable(&self, metrics: &Metrics, viewport_width: f32) -> bool {
+        metrics.content_width <= viewport_width + 0.5
+    }
+
     /// The tree column index, if any column hosts the collapse affordance.
     fn tree_column(&self) -> Option<usize> {
         self.columns.iter().position(|column| column.tree_column)
     }
 
-    /// The local hit rectangle of a row's chevron, if it has one.
+    /// The local hit rectangle of a row's chevron in content space (the x is the
+    /// unscrolled column offset), if it has one.
     fn chevron_zone(&self, widths: &[f32], row_index: usize, top_y: f32) -> Option<Rectangle> {
         let row = self.rows.get(row_index)?;
         if row.toggle == Toggle::None {
@@ -182,45 +271,87 @@ where
     }
 }
 
+/// Per-frame layout metrics derived from the columns and the viewport.
+struct Metrics {
+    /// The fitted display widths (sum to [`Metrics::content_width`]).
+    widths: Vec<f32>,
+    /// Each column's minimum width.
+    mins: Vec<f32>,
+    /// The horizontal content extent.
+    content_width: f32,
+    /// The vertical content extent.
+    content_height: f32,
+}
+
 /// Persistent widget state, kept in the widget tree across the per-frame rebuild.
 struct State {
+    scroll_x: f32,
     scroll_y: f32,
+    viewport: Size,
     hovered_row: Option<usize>,
-    drag: Option<ColumnDrag>,
+    hovered_thumb: Option<Axis>,
+    shift_held: bool,
+    basis: Vec<f32>,
+    drag: Option<Drag>,
     cache_header: Cache,
     cache_rows: Cache,
     cache_highlight: Cache,
+    cache_overlay: Cache,
     keys: RefCell<CacheKeys>,
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
+            scroll_x: 0.0,
             scroll_y: 0.0,
+            viewport: Size::ZERO,
             hovered_row: None,
+            hovered_thumb: None,
+            shift_held: false,
+            basis: Vec::new(),
             drag: None,
             cache_header: Cache::new(),
             cache_rows: Cache::new(),
             cache_highlight: Cache::new(),
+            cache_overlay: Cache::new(),
             keys: RefCell::new(CacheKeys::stale()),
         }
     }
 }
 
-/// An in-progress column resize: the column being sized and its fixed left edge.
-struct ColumnDrag {
-    column: usize,
-    left_edge: f32,
+impl State {
+    /// Reseeds the basis widths from the columns when the stored basis is stale.
+    fn ensure_basis(&mut self, columns: &[Column]) {
+        if self.basis.len() != columns.len() {
+            self.basis = columns.iter().map(|column| column.width).collect();
+        }
+    }
+}
+
+/// An in-progress drag: either a column border or a scrollbar thumb.
+enum Drag {
+    /// Resizing the internal border on the right edge of column `border`.
+    Column {
+        border: usize,
+        snapshot: Vec<f32>,
+        grab_dx: f32,
+    },
+    /// Dragging a scrollbar thumb; `grab` is the pointer offset within the thumb.
+    Scroll { axis: Axis, grab: f32 },
 }
 
 /// The inputs each cached layer was last drawn against, for invalidation.
 struct CacheKeys {
     revision: u64,
+    scroll_x: f32,
     scroll_y: f32,
     size: Size,
     widths: Vec<f32>,
+    content_width: f32,
     hover: Option<usize>,
     active: Option<usize>,
+    hovered_thumb: Option<Axis>,
 }
 
 impl CacheKeys {
@@ -228,11 +359,14 @@ impl CacheKeys {
     fn stale() -> Self {
         Self {
             revision: u64::MAX,
+            scroll_x: f32::NAN,
             scroll_y: f32::NAN,
             size: Size::ZERO,
             widths: Vec::new(),
+            content_width: f32::NAN,
             hover: None,
             active: None,
+            hovered_thumb: None,
         }
     }
 }
@@ -471,40 +605,55 @@ where
 
         let state = tree.state.downcast_ref::<State>();
         let resolved = <Theme as Catalog>::style(theme, &self.class, Status::Regular);
-        let widths = geometry::distribute_widths(&self.columns, bounds.width);
 
-        let scroll_y = state.scroll_y.min(geometry::max_scroll(
-            self.rows.len(),
-            self.row_height,
-            self.body_height(bounds),
-        ));
+        let metrics = self.metrics(state);
+        let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics);
 
-        self.reconcile_caches(state, bounds.size(), &widths, scroll_y);
+        self.reconcile_caches(state, bounds.size(), &metrics, scroll_x, scroll_y);
 
         let painter = Painter {
             style: &resolved,
             columns: &self.columns,
-            widths: &widths,
+            widths: &metrics.widths,
             row_height: self.row_height,
             text_size: self.text_size,
         };
 
         let header = state.cache_header.draw(renderer, bounds.size(), |frame| {
-            self.draw_header(frame, &painter, bounds)
+            self.draw_header(frame, &painter, bounds, scroll_x);
         });
         let rows = state.cache_rows.draw(renderer, bounds.size(), |frame| {
-            self.draw_rows(frame, &painter, bounds, scroll_y)
+            self.draw_rows(frame, &painter, bounds, scroll_x, scroll_y);
         });
         let highlight = state
             .cache_highlight
             .draw(renderer, bounds.size(), |frame| {
-                self.draw_highlight(frame, &painter, bounds, scroll_y, state.hovered_row)
+                self.draw_highlight(
+                    frame,
+                    &painter,
+                    bounds,
+                    scroll_x,
+                    scroll_y,
+                    state.hovered_row,
+                );
             });
+        let overlay = state.cache_overlay.draw(renderer, bounds.size(), |frame| {
+            self.draw_overlay(
+                frame,
+                &resolved,
+                bounds.size(),
+                &metrics,
+                scroll_x,
+                scroll_y,
+                state,
+            );
+        });
 
         renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
             renderer.draw_geometry(header);
             renderer.draw_geometry(rows);
             renderer.draw_geometry(highlight);
+            renderer.draw_geometry(overlay);
         });
     }
 
@@ -520,90 +669,150 @@ where
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let widths = geometry::distribute_widths(&self.columns, bounds.width);
         let state = tree.state.downcast_mut::<State>();
+        state.viewport = bounds.size();
+        state.ensure_basis(&self.columns);
+
+        let metrics = self.metrics(state);
+        let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics);
 
         match event {
+            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                state.shift_held = modifiers.shift();
+            }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 if cursor.position_over(bounds).is_none() {
                     return;
                 }
-                let amount = match delta {
-                    mouse::ScrollDelta::Lines { y, .. } => y * SCROLL_LINE_HEIGHT,
-                    mouse::ScrollDelta::Pixels { y, .. } => *y,
+                let (mut dx, mut dy) = match delta {
+                    mouse::ScrollDelta::Lines { x, y } => {
+                        (x * SCROLL_LINE_HEIGHT, y * SCROLL_LINE_HEIGHT)
+                    }
+                    mouse::ScrollDelta::Pixels { x, y } => (*x, *y),
                 };
-                let max = geometry::max_scroll(
-                    self.rows.len(),
-                    self.row_height,
-                    self.body_height(bounds),
-                );
-                let next = (state.scroll_y - amount).clamp(0.0, max);
-                if next != state.scroll_y {
-                    state.scroll_y = next;
+                if state.shift_held && dx == 0.0 {
+                    dx = dy;
+                    dy = 0.0;
+                }
+
+                let body_height = self.body_height(bounds);
+                let max_x = geometry::max_scroll_x(metrics.content_width, bounds.width);
+                let max_y = geometry::max_scroll(self.rows.len(), self.row_height, body_height);
+                let next_x = (scroll_x - dx).clamp(0.0, max_x);
+                let next_y = (scroll_y - dy).clamp(0.0, max_y);
+                if next_x != state.scroll_x || next_y != state.scroll_y {
+                    state.scroll_x = next_x;
+                    state.scroll_y = next_y;
                     shell.capture_event();
                     shell.request_redraw();
                 }
             }
-            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                if let Some(drag) = &state.drag {
-                    let Some(position) = cursor.position() else {
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => match &state.drag {
+                Some(Drag::Column {
+                    border,
+                    snapshot,
+                    grab_dx,
+                }) => {
+                    let Some(position) = cursor.position_in(bounds) else {
                         return;
                     };
-                    let min_width = self.columns[drag.column].min_width;
-                    let new_width = (position.x - bounds.x - drag.left_edge).max(min_width);
-                    if let Some(callback) = &self.on_column_resize {
-                        shell.publish(callback(drag.column, new_width));
-                    }
-                    shell.request_redraw();
-                    return;
-                }
-
-                let next = cursor.position_in(bounds).and_then(|position| {
-                    geometry::row_at(
-                        position.y,
-                        self.header_height,
-                        self.row_height,
-                        state.scroll_y,
-                        self.rows.len(),
-                    )
-                });
-                if next != state.hovered_row {
-                    state.hovered_row = next;
-                    if let Some(callback) = &self.on_hover {
-                        shell.publish(callback(next));
-                    }
+                    let desired = position.x + scroll_x - grab_dx;
+                    let widths =
+                        geometry::resize_columns(snapshot, &metrics.mins, *border, desired);
+                    state.basis = widths;
                     shell.request_redraw();
                 }
-            }
+                Some(Drag::Scroll { axis, grab }) => {
+                    let axis = *axis;
+                    let grab = *grab;
+                    let Some(position) = cursor.position_in(bounds) else {
+                        return;
+                    };
+                    let (vertical, horizontal) =
+                        self.scrollbars(bounds.size(), &metrics, scroll_x, scroll_y);
+                    let bar = match axis {
+                        Axis::Vertical => vertical,
+                        Axis::Horizontal => horizontal,
+                    };
+                    if let Some(bar) = bar {
+                        let (lead, content_len) = match axis {
+                            Axis::Vertical => (position.y - grab, metrics.content_height),
+                            Axis::Horizontal => (position.x - grab, metrics.content_width),
+                        };
+                        let offset = bar.offset_for_thumb(axis, content_len, lead);
+                        match axis {
+                            Axis::Vertical => state.scroll_y = offset,
+                            Axis::Horizontal => state.scroll_x = offset,
+                        }
+                        state.hovered_thumb = Some(axis);
+                        shell.request_redraw();
+                    }
+                }
+                None => {
+                    self.handle_hover(state, &metrics, scroll_x, scroll_y, bounds, cursor, shell);
+                }
+            },
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let Some(position) = cursor.position_in(bounds) else {
                     return;
                 };
 
-                if let Some(column) =
-                    geometry::divider_at(&widths, &self.columns, position.x, geometry::DIVIDER_GRAB)
+                let (vertical, horizontal) =
+                    self.scrollbars(bounds.size(), &metrics, scroll_x, scroll_y);
+                if let Some(bar) = vertical
+                    && bar.thumb.contains(position)
                 {
-                    state.drag = Some(ColumnDrag {
-                        column,
-                        left_edge: geometry::column_left(&widths, column),
+                    state.drag = Some(Drag::Scroll {
+                        axis: Axis::Vertical,
+                        grab: position.y - bar.thumb.y,
                     });
+                    state.hovered_thumb = Some(Axis::Vertical);
                     shell.capture_event();
                     return;
+                }
+                if let Some(bar) = horizontal
+                    && bar.thumb.contains(position)
+                {
+                    state.drag = Some(Drag::Scroll {
+                        axis: Axis::Horizontal,
+                        grab: position.x - bar.thumb.x,
+                    });
+                    state.hovered_thumb = Some(Axis::Horizontal);
+                    shell.capture_event();
+                    return;
+                }
+
+                if position.y < self.header_height && self.columns_resizable(&metrics, bounds.width)
+                {
+                    let content_x = position.x + scroll_x;
+                    if let Some(border) =
+                        geometry::divider_at(&metrics.widths, content_x, geometry::DIVIDER_GRAB)
+                    {
+                        let border_x: f32 = metrics.widths[..=border].iter().sum();
+                        state.drag = Some(Drag::Column {
+                            border,
+                            snapshot: metrics.widths.clone(),
+                            grab_dx: content_x - border_x,
+                        });
+                        shell.capture_event();
+                        return;
+                    }
                 }
 
                 let Some(index) = geometry::row_at(
                     position.y,
                     self.header_height,
                     self.row_height,
-                    state.scroll_y,
+                    scroll_y,
                     self.rows.len(),
                 ) else {
                     return;
                 };
 
-                let top_y = self.header_height + index as f32 * self.row_height - state.scroll_y;
-                if let Some(zone) = self.chevron_zone(&widths, index, top_y)
-                    && zone.contains(position)
+                let top_y = self.header_height + index as f32 * self.row_height - scroll_y;
+                let content_point = Point::new(position.x + scroll_x, position.y);
+                if let Some(zone) = self.chevron_zone(&metrics.widths, index, top_y)
+                    && zone.contains(content_point)
                 {
                     if let Some(callback) = &self.on_toggle_press {
                         shell.publish(callback(index));
@@ -636,8 +845,11 @@ where
         _renderer: &iced::Renderer,
     ) -> mouse::Interaction {
         let state = tree.state.downcast_ref::<State>();
-        if state.drag.is_some() {
-            return mouse::Interaction::ResizingHorizontally;
+        if let Some(drag) = &state.drag {
+            return match drag {
+                Drag::Column { .. } => mouse::Interaction::ResizingHorizontally,
+                Drag::Scroll { .. } => mouse::Interaction::Pointer,
+            };
         }
 
         let bounds = layout.bounds();
@@ -645,8 +857,23 @@ where
             return mouse::Interaction::None;
         };
 
-        let widths = geometry::distribute_widths(&self.columns, bounds.width);
-        if geometry::divider_at(&widths, &self.columns, position.x, geometry::DIVIDER_GRAB)
+        let metrics = self.metrics(state);
+        let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics);
+
+        let (vertical, horizontal) = self.scrollbars(bounds.size(), &metrics, scroll_x, scroll_y);
+        let over_thumb = vertical.is_some_and(|bar| bar.thumb.contains(position))
+            || horizontal.is_some_and(|bar| bar.thumb.contains(position));
+        if over_thumb {
+            return mouse::Interaction::Pointer;
+        }
+
+        if position.y < self.header_height
+            && self.columns_resizable(&metrics, bounds.width)
+            && geometry::divider_at(
+                &metrics.widths,
+                position.x + scroll_x,
+                geometry::DIVIDER_GRAB,
+            )
             .is_some()
         {
             return mouse::Interaction::ResizingHorizontally;
@@ -656,7 +883,7 @@ where
             position.y,
             self.header_height,
             self.row_height,
-            state.scroll_y,
+            scroll_y,
             self.rows.len(),
         )
         .is_some();
@@ -672,17 +899,76 @@ impl<'a, Message, Theme> DataTable<'a, Message, Theme>
 where
     Theme: Catalog,
 {
+    /// Updates the hovered row and hovered thumb from a non-dragging cursor move.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_hover(
+        &self,
+        state: &mut State,
+        metrics: &Metrics,
+        scroll_x: f32,
+        scroll_y: f32,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let (vertical, horizontal) = self.scrollbars(bounds.size(), metrics, scroll_x, scroll_y);
+        let thumb = cursor.position_in(bounds).and_then(|position| {
+            if vertical.is_some_and(|bar| bar.thumb.contains(position)) {
+                Some(Axis::Vertical)
+            } else if horizontal.is_some_and(|bar| bar.thumb.contains(position)) {
+                Some(Axis::Horizontal)
+            } else {
+                None
+            }
+        });
+        if thumb != state.hovered_thumb {
+            state.hovered_thumb = thumb;
+            shell.request_redraw();
+        }
+
+        let next = cursor.position_in(bounds).and_then(|position| {
+            geometry::row_at(
+                position.y,
+                self.header_height,
+                self.row_height,
+                scroll_y,
+                self.rows.len(),
+            )
+        });
+        if next != state.hovered_row {
+            state.hovered_row = next;
+            if let Some(callback) = &self.on_hover {
+                shell.publish(callback(next));
+            }
+            shell.request_redraw();
+        }
+    }
+
     /// Clears any cached layer whose inputs changed since the last draw.
-    fn reconcile_caches(&self, state: &State, size: Size, widths: &[f32], scroll_y: f32) {
+    fn reconcile_caches(
+        &self,
+        state: &State,
+        size: Size,
+        metrics: &Metrics,
+        scroll_x: f32,
+        scroll_y: f32,
+    ) {
         let mut keys = state.keys.borrow_mut();
 
         let rows_dirty = keys.revision != self.revision
             || keys.size != size
             || keys.scroll_y != scroll_y
-            || keys.widths != widths;
-        let header_dirty = keys.size != size || keys.widths != widths;
+            || keys.scroll_x != scroll_x
+            || keys.widths != metrics.widths;
+        let header_dirty =
+            keys.size != size || keys.widths != metrics.widths || keys.scroll_x != scroll_x;
         let highlight_dirty =
             rows_dirty || keys.hover != state.hovered_row || keys.active != self.active_row;
+        let overlay_dirty = keys.size != size
+            || keys.scroll_x != scroll_x
+            || keys.scroll_y != scroll_y
+            || keys.content_width != metrics.content_width
+            || keys.hovered_thumb != state.hovered_thumb;
 
         if rows_dirty {
             state.cache_rows.clear();
@@ -693,18 +979,24 @@ where
         if highlight_dirty {
             state.cache_highlight.clear();
         }
+        if overlay_dirty {
+            state.cache_overlay.clear();
+        }
 
         *keys = CacheKeys {
             revision: self.revision,
+            scroll_x,
             scroll_y,
             size,
-            widths: widths.to_vec(),
+            widths: metrics.widths.clone(),
+            content_width: metrics.content_width,
             hover: state.hovered_row,
             active: self.active_row,
+            hovered_thumb: state.hovered_thumb,
         };
     }
 
-    fn draw_header(&self, frame: &mut Frame, painter: &Painter, bounds: Rectangle) {
+    fn draw_header(&self, frame: &mut Frame, painter: &Painter, bounds: Rectangle, scroll_x: f32) {
         frame.fill_rectangle(
             Point::ORIGIN,
             Size::new(bounds.width, self.header_height),
@@ -720,26 +1012,43 @@ where
             ..*painter
         };
 
-        let center_y = self.header_height / 2.0;
-        for (index, column) in self.columns.iter().enumerate() {
-            let left = geometry::column_left(painter.widths, index);
-            let width = painter.widths[index];
-            let header_cell = Cell::text(column.header.clone());
-            header_painter.cell(
-                frame,
-                &header_cell,
-                column.align,
-                left,
-                width,
-                center_y,
-                Status::Regular,
-            );
-        }
+        let region = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: bounds.width,
+            height: self.header_height,
+        };
+        frame.with_clip(region, |frame| {
+            frame.translate(Vector::new(-scroll_x, 0.0));
 
-        painter.dividers(frame, 0.0, self.header_height);
+            let center_y = self.header_height / 2.0;
+            for (index, column) in self.columns.iter().enumerate() {
+                let left = geometry::column_left(painter.widths, index);
+                let width = painter.widths[index];
+                let header_cell = Cell::text(column.header.clone());
+                header_painter.cell(
+                    frame,
+                    &header_cell,
+                    column.align,
+                    left,
+                    width,
+                    center_y,
+                    Status::Regular,
+                );
+            }
+
+            painter.dividers(frame, 0.0, self.header_height);
+        });
     }
 
-    fn draw_rows(&self, frame: &mut Frame, painter: &Painter, bounds: Rectangle, scroll_y: f32) {
+    fn draw_rows(
+        &self,
+        frame: &mut Frame,
+        painter: &Painter,
+        bounds: Rectangle,
+        scroll_x: f32,
+        scroll_y: f32,
+    ) {
         let body = Rectangle {
             x: 0.0,
             y: self.header_height,
@@ -747,6 +1056,8 @@ where
             height: self.body_height(bounds),
         };
         frame.with_clip(body, |frame| {
+            frame.translate(Vector::new(-scroll_x, 0.0));
+
             let range = geometry::visible_rows(
                 scroll_y,
                 self.body_height(bounds),
@@ -766,6 +1077,7 @@ where
         frame: &mut Frame,
         painter: &Painter,
         bounds: Rectangle,
+        scroll_x: f32,
         scroll_y: f32,
         hovered_row: Option<usize>,
     ) {
@@ -780,6 +1092,8 @@ where
         let hovered = hovered_row.filter(|&index| index < row_count);
 
         frame.with_clip(body, |frame| {
+            frame.translate(Vector::new(-scroll_x, 0.0));
+
             // Active first so a row that is both hovered and active shows hover on top.
             if let Some(index) = active.filter(|index| Some(*index) != hovered) {
                 let top_y = self.header_height + index as f32 * self.row_height - scroll_y;
@@ -790,6 +1104,31 @@ where
                 painter.row(frame, &self.rows[index], index, top_y, Status::Hovered);
             }
         });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_overlay(
+        &self,
+        frame: &mut Frame,
+        style: &Style,
+        size: Size,
+        metrics: &Metrics,
+        scroll_x: f32,
+        scroll_y: f32,
+        state: &State,
+    ) {
+        let (vertical, horizontal) = self.scrollbars(size, metrics, scroll_x, scroll_y);
+        for (axis, bar) in [(Axis::Vertical, vertical), (Axis::Horizontal, horizontal)] {
+            let Some(bar) = bar else {
+                continue;
+            };
+            let thumb = if state.hovered_thumb == Some(axis) {
+                style.scrollbar_thumb_hover
+            } else {
+                style.scrollbar_thumb
+            };
+            scrollbar::draw(frame, &bar, style.scrollbar_track, thumb);
+        }
     }
 }
 

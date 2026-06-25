@@ -7,9 +7,6 @@ use iced::{Element, Length, Task};
 use iced_table::data_table::style::Status;
 use iced_table::{Cell, CellAlign, Column, DataTable, FontKind, Row, TextRole, Toggle, Weight};
 
-const TYPE_COLUMN: usize = 1;
-const ADDRESS_COLUMN: usize = 2;
-
 fn main() -> iced::Result {
     iced::application(Demo::new, Demo::update, Demo::view)
         .title("DataTable demo")
@@ -21,7 +18,6 @@ enum Message {
     RowPressed(usize),
     TogglePressed(usize),
     Hovered(Option<usize>),
-    ColumnResized(usize, f32),
 }
 
 struct Demo {
@@ -30,8 +26,6 @@ struct Demo {
     cells: Vec<[Cell<'static>; 3]>,
     selected: Option<Vec<usize>>,
     hovered: Option<usize>,
-    type_width: f32,
-    address_width: f32,
     revision: u64,
 }
 
@@ -59,8 +53,6 @@ impl Demo {
             cells: Vec::new(),
             selected: None,
             hovered: None,
-            type_width: 140.0,
-            address_width: 120.0,
             revision: 0,
         };
         demo.rebuild();
@@ -105,27 +97,23 @@ impl Demo {
                 }
             }
             Message::Hovered(row) => self.hovered = row,
-            Message::ColumnResized(column, width) => match column {
-                TYPE_COLUMN => self.type_width = width,
-                ADDRESS_COLUMN => self.address_width = width,
-                _ => {}
-            },
         }
         Task::none()
     }
 
     fn view(&self) -> Element<'_, Message> {
         let columns = vec![
-            Column::new("Name").tree_column(true),
+            Column::new("Name")
+                .width(220.0)
+                .min_width(120.0)
+                .tree_column(true),
             Column::new("Type")
-                .fixed(self.type_width)
+                .width(140.0)
                 .min_width(80.0)
-                .resizable(true)
                 .align(CellAlign::Start),
             Column::new("Address")
-                .fixed(self.address_width)
+                .width(120.0)
                 .min_width(90.0)
-                .resizable(true)
                 .align(CellAlign::End),
         ];
 
@@ -153,7 +141,6 @@ impl Demo {
             .on_row_press(Message::RowPressed)
             .on_toggle_press(Message::TogglePressed)
             .on_hover(Message::Hovered)
-            .on_column_resize(Message::ColumnResized)
             .style(table_style);
 
         let status = text(format!(
