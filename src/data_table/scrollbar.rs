@@ -8,9 +8,6 @@
 use iced::widget::canvas::Frame;
 use iced::{Color, Point, Rectangle, Size};
 
-/// The shortest a thumb is ever drawn, so it stays grabbable with huge content.
-pub(crate) const MIN_THUMB: f32 = 24.0;
-
 /// The axis a scrollbar scrolls along.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Axis {
@@ -159,7 +156,7 @@ mod tests {
                 track(Axis::Vertical, 500.0),
                 400.0,
                 0.0,
-                MIN_THUMB
+                24.0
             )
             .is_none()
         );
@@ -172,7 +169,7 @@ mod tests {
             track(Axis::Vertical, 500.0),
             1000.0,
             0.0,
-            MIN_THUMB,
+            24.0,
         )
         .unwrap();
         assert!((bar.thumb.height - 250.0).abs() < 1e-3);
@@ -186,7 +183,7 @@ mod tests {
             track(Axis::Vertical, 500.0),
             1000.0,
             500.0,
-            MIN_THUMB,
+            24.0,
         )
         .unwrap();
         // travel = 500 - 250 = 250, so the thumb ends at track.y + 250.
@@ -200,17 +197,17 @@ mod tests {
             track(Axis::Horizontal, 500.0),
             100_000.0,
             0.0,
-            MIN_THUMB,
+            24.0,
         )
         .unwrap();
-        assert!((bar.thumb.width - MIN_THUMB).abs() < 1e-3);
+        assert!((bar.thumb.width - 24.0).abs() < 1e-3);
     }
 
     #[test]
     fn offset_round_trips_through_the_thumb_position() {
         let axis = Axis::Vertical;
         let content = 1000.0;
-        let bar = Scrollbar::new(axis, track(axis, 500.0), content, 120.0, MIN_THUMB).unwrap();
+        let bar = Scrollbar::new(axis, track(axis, 500.0), content, 120.0, 24.0).unwrap();
         let recovered = bar.offset_for_thumb(axis, content, bar.thumb.y);
         assert!((recovered - 120.0).abs() < 1e-3);
     }

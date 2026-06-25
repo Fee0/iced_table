@@ -38,17 +38,15 @@ use crate::data_table::style::{Catalog, Status, Style, StyleFn};
 const DEFAULT_ROW_HEIGHT: f32 = 24.0;
 const DEFAULT_HEADER_HEIGHT: f32 = 28.0;
 const DEFAULT_TEXT_SIZE: f32 = 13.0;
-
-const CELL_PADDING_X: f32 = 8.0;
-const INDENT_STEP: f32 = 14.0;
-const CHEVRON_BOX: f32 = 16.0;
-const CHEVRON_GLYPH: f32 = 8.0;
-const DIVIDER_WIDTH: f32 = 1.0;
-const INDENT_GUIDE_WIDTH: f32 = 1.0;
-const SCROLLBAR_THICKNESS: f32 = 10.0;
-
-/// One scrolled wheel line, in pixels.
-const SCROLL_LINE_HEIGHT: f32 = DEFAULT_ROW_HEIGHT;
+const DEFAULT_CELL_PADDING_X: f32 = 8.0;
+const DEFAULT_INDENT_STEP: f32 = 14.0;
+const DEFAULT_CHEVRON_BOX: f32 = 16.0;
+const DEFAULT_CHEVRON_GLYPH: f32 = 8.0;
+const DEFAULT_SCROLLBAR_THICKNESS: f32 = 10.0;
+const DEFAULT_SCROLLBAR_MIN_THUMB: f32 = 24.0;
+const DEFAULT_DIVIDER_GRAB: f32 = 4.0;
+const DEFAULT_DIVIDER_WIDTH: f32 = 1.0;
+const DEFAULT_INDENT_GUIDE_WIDTH: f32 = 1.0;
 
 /// A reusable, canvas-rendered table generic over its `Theme`.
 ///
@@ -66,6 +64,16 @@ where
     row_height: f32,
     header_height: f32,
     text_size: f32,
+    cell_padding_x: f32,
+    indent_step: f32,
+    chevron_box: f32,
+    chevron_glyph: f32,
+    scrollbar_thickness: f32,
+    scrollbar_min_thumb: f32,
+    divider_grab: f32,
+    divider_width: f32,
+    indent_guide_width: f32,
+    scroll_line_height: f32,
     active_row: Option<usize>,
     revision: u64,
     on_row_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
@@ -86,6 +94,16 @@ where
             row_height: DEFAULT_ROW_HEIGHT,
             header_height: DEFAULT_HEADER_HEIGHT,
             text_size: DEFAULT_TEXT_SIZE,
+            cell_padding_x: DEFAULT_CELL_PADDING_X,
+            indent_step: DEFAULT_INDENT_STEP,
+            chevron_box: DEFAULT_CHEVRON_BOX,
+            chevron_glyph: DEFAULT_CHEVRON_GLYPH,
+            scrollbar_thickness: DEFAULT_SCROLLBAR_THICKNESS,
+            scrollbar_min_thumb: DEFAULT_SCROLLBAR_MIN_THUMB,
+            divider_grab: DEFAULT_DIVIDER_GRAB,
+            divider_width: DEFAULT_DIVIDER_WIDTH,
+            indent_guide_width: DEFAULT_INDENT_GUIDE_WIDTH,
+            scroll_line_height: DEFAULT_ROW_HEIGHT,
             active_row: None,
             revision: 0,
             on_row_press: None,
@@ -110,6 +128,66 @@ where
     /// Sets the text size used for cells and headers.
     pub fn text_size(mut self, text_size: f32) -> Self {
         self.text_size = text_size;
+        self
+    }
+
+    /// Sets horizontal padding inside each cell.
+    pub fn cell_padding_x(mut self, cell_padding_x: f32) -> Self {
+        self.cell_padding_x = cell_padding_x;
+        self
+    }
+
+    /// Sets the pixel step per tree depth level.
+    pub fn indent_step(mut self, indent_step: f32) -> Self {
+        self.indent_step = indent_step;
+        self
+    }
+
+    /// Sets the bounding box size reserved for the chevron icon.
+    pub fn chevron_box(mut self, chevron_box: f32) -> Self {
+        self.chevron_box = chevron_box;
+        self
+    }
+
+    /// Sets the rendered size of the chevron triangle glyph.
+    pub fn chevron_glyph(mut self, chevron_glyph: f32) -> Self {
+        self.chevron_glyph = chevron_glyph;
+        self
+    }
+
+    /// Sets the scrollbar track thickness (width for vertical, height for horizontal).
+    pub fn scrollbar_thickness(mut self, scrollbar_thickness: f32) -> Self {
+        self.scrollbar_thickness = scrollbar_thickness;
+        self
+    }
+
+    /// Sets the minimum scrollbar thumb length so it stays grabbable with huge content.
+    pub fn scrollbar_min_thumb(mut self, scrollbar_min_thumb: f32) -> Self {
+        self.scrollbar_min_thumb = scrollbar_min_thumb;
+        self
+    }
+
+    /// Sets the half-extent hit zone on each side of a column divider for resize dragging.
+    pub fn divider_grab(mut self, divider_grab: f32) -> Self {
+        self.divider_grab = divider_grab;
+        self
+    }
+
+    /// Sets the column separator line thickness in pixels.
+    pub fn divider_width(mut self, divider_width: f32) -> Self {
+        self.divider_width = divider_width;
+        self
+    }
+
+    /// Sets the tree indent guide line thickness in pixels.
+    pub fn indent_guide_width(mut self, indent_guide_width: f32) -> Self {
+        self.indent_guide_width = indent_guide_width;
+        self
+    }
+
+    /// Sets the pixel distance scrolled per wheel line event.
+    pub fn scroll_line_height(mut self, scroll_line_height: f32) -> Self {
+        self.scroll_line_height = scroll_line_height;
         self
     }
 
@@ -202,22 +280,32 @@ where
         let v_needed = scrollbar::visible(metrics.content_height, body_height);
         let h_needed = scrollbar::visible(metrics.content_width, size.width);
 
-        let v_height = body_height - if h_needed { SCROLLBAR_THICKNESS } else { 0.0 };
-        let h_width = size.width - if v_needed { SCROLLBAR_THICKNESS } else { 0.0 };
+        let v_height = body_height
+            - if h_needed {
+                self.scrollbar_thickness
+            } else {
+                0.0
+            };
+        let h_width = size.width
+            - if v_needed {
+                self.scrollbar_thickness
+            } else {
+                0.0
+            };
 
         let vertical = v_needed
             .then(|| {
                 Scrollbar::new(
                     Axis::Vertical,
                     Rectangle {
-                        x: size.width - SCROLLBAR_THICKNESS,
+                        x: size.width - self.scrollbar_thickness,
                         y: self.header_height,
-                        width: SCROLLBAR_THICKNESS,
+                        width: self.scrollbar_thickness,
                         height: v_height,
                     },
                     metrics.content_height,
                     scroll_y,
-                    scrollbar::MIN_THUMB,
+                    self.scrollbar_min_thumb,
                 )
             })
             .flatten();
@@ -227,13 +315,13 @@ where
                     Axis::Horizontal,
                     Rectangle {
                         x: 0.0,
-                        y: size.height - SCROLLBAR_THICKNESS,
+                        y: size.height - self.scrollbar_thickness,
                         width: h_width,
-                        height: SCROLLBAR_THICKNESS,
+                        height: self.scrollbar_thickness,
                     },
                     metrics.content_width,
                     scroll_x,
-                    scrollbar::MIN_THUMB,
+                    self.scrollbar_min_thumb,
                 )
             })
             .flatten();
@@ -260,12 +348,12 @@ where
             return None;
         }
         let tree_column = self.tree_column()?;
-        let indent = f32::from(row.depth) * INDENT_STEP;
-        let left = geometry::column_left(widths, tree_column) + CELL_PADDING_X + indent;
+        let indent = f32::from(row.depth) * self.indent_step;
+        let left = geometry::column_left(widths, tree_column) + self.cell_padding_x + indent;
         Some(Rectangle {
             x: left,
             y: top_y,
-            width: CHEVRON_BOX,
+            width: self.chevron_box,
             height: self.row_height,
         })
     }
@@ -334,7 +422,11 @@ enum Drag {
     /// Resizing the internal border on the right edge of column `border`.
     Column {
         border: usize,
+        /// Updated to the new widths after every mouse-move frame (see
+        /// [`geometry::resize_columns`] snapshot contract).
         snapshot: Vec<f32>,
+        /// Cursor-to-divider offset captured at press time, so the divider
+        /// tracks the pointer exactly rather than jumping to it.
         grab_dx: f32,
     },
     /// Dragging a scrollbar thumb; `grab` is the pointer offset within the thumb.
@@ -378,6 +470,12 @@ struct Painter<'p> {
     widths: &'p [f32],
     row_height: f32,
     text_size: f32,
+    cell_padding_x: f32,
+    indent_step: f32,
+    chevron_box: f32,
+    chevron_glyph: f32,
+    divider_width: f32,
+    indent_guide_width: f32,
 }
 
 impl Painter<'_> {
@@ -416,25 +514,26 @@ impl Painter<'_> {
         let left = geometry::column_left(self.widths, index);
         let width = self.widths[index];
         let cell = &row.cells[index];
-        let indent = f32::from(row.depth) * INDENT_STEP;
-        let content_left = left + CELL_PADDING_X + indent;
+        let indent = f32::from(row.depth) * self.indent_step;
+        let content_left = left + self.cell_padding_x + indent;
 
         self.indent_guides(frame, left, row.depth, center_y);
 
         if row.toggle != Toggle::None {
             let color = self.style.text_color(TextRole::Primary, status);
-            let glyph_left = content_left + (CHEVRON_BOX - CHEVRON_GLYPH) / 2.0;
+            let glyph_left = content_left + (self.chevron_box - self.chevron_glyph) / 2.0;
             draw_chevron(
                 frame,
                 glyph_left,
                 center_y,
                 row.toggle == Toggle::Expanded,
                 color,
+                self.chevron_glyph,
             );
         }
 
-        let text_left = content_left + CHEVRON_BOX;
-        let available = (left + width - CELL_PADDING_X - text_left).max(0.0);
+        let text_left = content_left + self.chevron_box;
+        let available = (left + width - self.cell_padding_x - text_left).max(0.0);
         self.text(
             frame,
             cell,
@@ -457,11 +556,11 @@ impl Painter<'_> {
         center_y: f32,
         status: Status,
     ) {
-        let inner = (width - 2.0 * CELL_PADDING_X).max(0.0);
+        let inner = (width - 2.0 * self.cell_padding_x).max(0.0);
         let (x, alignment) = match align {
-            CellAlign::Start => (left + CELL_PADDING_X, TextAlignment::Left),
+            CellAlign::Start => (left + self.cell_padding_x, TextAlignment::Left),
             CellAlign::Center => (left + width / 2.0, TextAlignment::Center),
-            CellAlign::End => (left + width - CELL_PADDING_X, TextAlignment::Right),
+            CellAlign::End => (left + width - self.cell_padding_x, TextAlignment::Right),
         };
         self.text(frame, cell, x, inner, alignment, center_y, status);
     }
@@ -501,10 +600,10 @@ impl Painter<'_> {
 
     fn indent_guides(&self, frame: &mut Frame, cell_left: f32, depth: u16, center_y: f32) {
         for level in 1..=depth {
-            let x = cell_left + CELL_PADDING_X + f32::from(level) * INDENT_STEP;
+            let x = cell_left + self.cell_padding_x + f32::from(level) * self.indent_step;
             frame.fill_rectangle(
                 Point::new(x, center_y - self.row_height / 2.0),
-                Size::new(INDENT_GUIDE_WIDTH, self.row_height),
+                Size::new(self.indent_guide_width, self.row_height),
                 self.style.indent_guide,
             );
         }
@@ -516,8 +615,8 @@ impl Painter<'_> {
         for width in &self.widths[..self.widths.len().saturating_sub(1)] {
             edge += width;
             frame.fill_rectangle(
-                Point::new(edge - DIVIDER_WIDTH / 2.0, top),
-                Size::new(DIVIDER_WIDTH, height),
+                Point::new(edge - self.divider_width / 2.0, top),
+                Size::new(self.divider_width, height),
                 self.style.divider,
             );
         }
@@ -529,22 +628,26 @@ impl Painter<'_> {
 }
 
 /// Draws a filled chevron triangle centered vertically on `center_y`.
-fn draw_chevron(frame: &mut Frame, x: f32, center_y: f32, expanded: bool, color: Color) {
+fn draw_chevron(
+    frame: &mut Frame,
+    x: f32,
+    center_y: f32,
+    expanded: bool,
+    color: Color,
+    glyph_size: f32,
+) {
     let path = Path::new(|builder| {
         if expanded {
-            builder.move_to(Point::new(x, center_y - CHEVRON_GLYPH / 4.0));
+            builder.move_to(Point::new(x, center_y - glyph_size / 4.0));
+            builder.line_to(Point::new(x + glyph_size, center_y - glyph_size / 4.0));
             builder.line_to(Point::new(
-                x + CHEVRON_GLYPH,
-                center_y - CHEVRON_GLYPH / 4.0,
-            ));
-            builder.line_to(Point::new(
-                x + CHEVRON_GLYPH / 2.0,
-                center_y + CHEVRON_GLYPH / 2.0,
+                x + glyph_size / 2.0,
+                center_y + glyph_size / 2.0,
             ));
         } else {
-            builder.move_to(Point::new(x, center_y - CHEVRON_GLYPH / 2.0));
-            builder.line_to(Point::new(x + CHEVRON_GLYPH / 2.0, center_y));
-            builder.line_to(Point::new(x, center_y + CHEVRON_GLYPH / 2.0));
+            builder.move_to(Point::new(x, center_y - glyph_size / 2.0));
+            builder.line_to(Point::new(x + glyph_size / 2.0, center_y));
+            builder.line_to(Point::new(x, center_y + glyph_size / 2.0));
         }
         builder.close();
     });
@@ -617,6 +720,12 @@ where
             widths: &metrics.widths,
             row_height: self.row_height,
             text_size: self.text_size,
+            cell_padding_x: self.cell_padding_x,
+            indent_step: self.indent_step,
+            chevron_box: self.chevron_box,
+            chevron_glyph: self.chevron_glyph,
+            divider_width: self.divider_width,
+            indent_guide_width: self.indent_guide_width,
         };
 
         let header = state.cache_header.draw(renderer, bounds.size(), |frame| {
@@ -686,7 +795,7 @@ where
                 }
                 let (mut dx, mut dy) = match delta {
                     mouse::ScrollDelta::Lines { x, y } => {
-                        (x * SCROLL_LINE_HEIGHT, y * SCROLL_LINE_HEIGHT)
+                        (x * self.scroll_line_height, y * self.scroll_line_height)
                     }
                     mouse::ScrollDelta::Pixels { x, y } => (*x, *y),
                 };
@@ -787,7 +896,7 @@ where
                 {
                     let content_x = position.x + scroll_x;
                     if let Some(border) =
-                        geometry::divider_at(&metrics.widths, content_x, geometry::DIVIDER_GRAB)
+                        geometry::divider_at(&metrics.widths, content_x, self.divider_grab)
                     {
                         let border_x: f32 = metrics.widths[..=border].iter().sum();
                         state.drag = Some(Drag::Column {
@@ -870,12 +979,8 @@ where
 
         if position.y < self.header_height
             && self.columns_resizable(&metrics, bounds.width)
-            && geometry::divider_at(
-                &metrics.widths,
-                position.x + scroll_x,
-                geometry::DIVIDER_GRAB,
-            )
-            .is_some()
+            && geometry::divider_at(&metrics.widths, position.x + scroll_x, self.divider_grab)
+                .is_some()
         {
             return mouse::Interaction::ResizingHorizontally;
         }

@@ -6,9 +6,6 @@
 
 use std::ops::Range;
 
-/// The half-extent, in pixels, of a divider's grab zone on either side.
-pub(crate) const DIVIDER_GRAB: f32 = 4.0;
-
 /// The horizontal content extent: the viewport, unless the columns' minimum
 /// widths don't fit, in which case content overflows to that minimum total.
 pub(crate) fn content_width(mins: &[f32], viewport: f32) -> f32 {
@@ -82,14 +79,20 @@ pub(crate) fn column_left(widths: &[f32], index: usize) -> f32 {
     widths[..index.min(widths.len())].iter().sum()
 }
 
-/// New display widths for dragging internal `border` (the right edge of column
-/// `border`) so that edge lands at `desired_border_x` in content space.
+/// New display widths after dragging internal `border` (the right edge of
+/// column `border`) to `desired_border_x` in content space.
 ///
-/// Dragging left cascades shrinkage through columns `border..=0`; the column
-/// immediately right of the divider (`border+1`) absorbs the freed space.
-/// Dragging right cascades shrinkage through columns `(border+1)..n`; column
-/// `border` absorbs. Columns on the opposite side are never touched.
-/// Total width is conserved.
+/// **Cascade rule.** The divider moves by `delta = desired - current_border_x`.
+/// Moving left (delta < 0): greedy-shrinks columns `border` → `0`; column
+/// `border + 1` grows by however much was absorbed (opposite side untouched).
+/// Moving right (delta > 0): greedy-shrinks columns `border + 1` → `n - 1`;
+/// column `border` grows. Total width is always conserved.
+///
+/// **Snapshot contract.** `snapshot` must be the widths returned by the
+/// *previous* call, not a copy frozen at drag start. Keeping it current means
+/// each call sees only a one-frame delta, so reversing the drag direction
+/// cascades the new way immediately instead of first undoing the prior cascade
+/// (which would make far-side dividers appear to drift with the cursor).
 pub(crate) fn resize_columns(
     snapshot: &[f32],
     mins: &[f32],
@@ -322,14 +325,14 @@ mod tests {
     fn divider_at_matches_internal_borders_only() {
         let widths = [100.0, 150.0, 200.0];
         // Right edge of column 0 at x=100, of column 1 at x=250.
-        assert_eq!(divider_at(&widths, 102.0, DIVIDER_GRAB), Some(0));
-        assert_eq!(divider_at(&widths, 250.0, DIVIDER_GRAB), Some(1));
+        assert_eq!(divider_at(&widths, 102.0, 4.0), Some(0));
+        assert_eq!(divider_at(&widths, 250.0, 4.0), Some(1));
         // The outer right edge at x=450 is not draggable.
-        assert_eq!(divider_at(&widths, 450.0, DIVIDER_GRAB), None);
+        assert_eq!(divider_at(&widths, 450.0, 4.0), None);
         // The outer left edge at x=0 is not draggable.
-        assert_eq!(divider_at(&widths, 0.0, DIVIDER_GRAB), None);
+        assert_eq!(divider_at(&widths, 0.0, 4.0), None);
         // Too far from any edge.
-        assert_eq!(divider_at(&widths, 130.0, DIVIDER_GRAB), None);
+        assert_eq!(divider_at(&widths, 130.0, 4.0), None);
     }
 
     #[test]
