@@ -1085,6 +1085,20 @@ where
             shell.request_redraw();
         }
 
+        if cursor.position_in(bounds).is_some_and(|p| {
+            vertical.is_some_and(|bar| bar.track.contains(p))
+                || horizontal.is_some_and(|bar| bar.track.contains(p))
+        }) {
+            if state.hovered_row.is_some() {
+                state.hovered_row = None;
+                if let Some(callback) = &self.on_hover {
+                    shell.publish(callback(None));
+                }
+                shell.request_redraw();
+            }
+            return;
+        }
+
         let next = cursor.position_in(bounds).and_then(|position| {
             geometry::row_at(
                 position.y,
