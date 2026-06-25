@@ -23,7 +23,6 @@ enum Message {
 struct Demo {
     roots: Vec<Node>,
     visible: Vec<VisibleRow>,
-    cells: Vec<[Cell<'static>; 3]>,
     selected: Option<Vec<usize>>,
     hovered: Option<usize>,
     revision: u64,
@@ -43,6 +42,7 @@ struct VisibleRow {
     path: Vec<usize>,
     depth: u16,
     toggle: Toggle,
+    cells: [Cell<'static>; 3],
 }
 
 impl Demo {
@@ -50,7 +50,6 @@ impl Demo {
         let mut demo = Self {
             roots: sample_tree(),
             visible: Vec::new(),
-            cells: Vec::new(),
             selected: None,
             hovered: None,
             revision: 0,
@@ -59,18 +58,11 @@ impl Demo {
         demo
     }
 
-    /// Recomputes the flattened visible rows and their owned cells after any
-    /// change to the tree or its collapse state.
+    /// Recomputes the flattened visible rows after any change to the tree or its
+    /// collapse state.
     fn rebuild(&mut self) {
         self.visible.clear();
-        self.cells.clear();
-        flatten(
-            &self.roots,
-            0,
-            &mut Vec::new(),
-            &mut self.visible,
-            &mut self.cells,
-        );
+        flatten(&self.roots, 0, &mut Vec::new(), &mut self.visible);
     }
 
     fn node_at_mut(&mut self, path: &[usize]) -> Option<&mut Node> {
@@ -120,11 +112,10 @@ impl Demo {
         let rows = self
             .visible
             .iter()
-            .enumerate()
-            .map(|(index, row)| Row {
+            .map(|row| Row {
                 depth: row.depth,
                 toggle: row.toggle,
-                cells: &self.cells[index],
+                cells: row.cells.to_vec(),
             })
             .collect();
 
@@ -168,14 +159,8 @@ fn table_style(theme: &iced::Theme, status: Status) -> iced_table::style::Style 
     style
 }
 
-/// Flattens the tree into visible rows + owned cells, honoring collapse state.
-fn flatten(
-    nodes: &[Node],
-    depth: u16,
-    path: &mut Vec<usize>,
-    visible: &mut Vec<VisibleRow>,
-    cells: &mut Vec<[Cell<'static>; 3]>,
-) {
+/// Flattens the tree into visible rows with owned cells, honoring collapse state.
+fn flatten(nodes: &[Node], depth: u16, path: &mut Vec<usize>, visible: &mut Vec<VisibleRow>) {
     for (index, node) in nodes.iter().enumerate() {
         path.push(index);
 
@@ -200,17 +185,17 @@ fn flatten(
             path: path.clone(),
             depth,
             toggle,
+            cells: [
+                Cell::text(node.name.clone()).weight(name_weight),
+                type_cell,
+                Cell::text(format!("0x{:08X}", node.address))
+                    .font_kind(FontKind::Editor)
+                    .role(TextRole::Muted),
+            ],
         });
-        cells.push([
-            Cell::text(node.name.clone()).weight(name_weight),
-            type_cell,
-            Cell::text(format!("0x{:08X}", node.address))
-                .font_kind(FontKind::Editor)
-                .role(TextRole::Muted),
-        ]);
 
         if has_children && !node.collapsed {
-            flatten(&node.children, depth + 1, path, visible, cells);
+            flatten(&node.children, depth + 1, path, visible);
         }
 
         path.pop();

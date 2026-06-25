@@ -2,8 +2,11 @@
 
 use crate::data_table::cell::Cell;
 
-/// One row of the table. Rows arrive as a flat slice that the consumer has
+/// One row of the table. Rows arrive as a flat list that the consumer has
 /// already filtered for collapse — the widget never walks a tree.
+///
+/// The row owns its cells, so the consumer can build them transiently each
+/// frame (e.g. inside `view`) without holding them in long-lived storage.
 #[derive(Debug, Clone)]
 pub struct Row<'a> {
     /// Indentation level for the tree column (the collapse hook).
@@ -11,12 +14,12 @@ pub struct Row<'a> {
     /// Whether this row shows an expand/collapse chevron, and in which state.
     pub toggle: Toggle,
     /// One [`Cell`] per column.
-    pub cells: &'a [Cell<'a>],
+    pub cells: Vec<Cell<'a>>,
 }
 
 impl<'a> Row<'a> {
     /// A depth-0 row with no chevron.
-    pub fn new(cells: &'a [Cell<'a>]) -> Self {
+    pub fn new(cells: Vec<Cell<'a>>) -> Self {
         Self {
             depth: 0,
             toggle: Toggle::None,
