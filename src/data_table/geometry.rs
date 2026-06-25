@@ -82,75 +82,14 @@ pub(crate) fn column_left(widths: &[f32], index: usize) -> f32 {
     widths[..index.min(widths.len())].iter().sum()
 }
 
-/// Rebuilds the right group of a divider drag so it occupies `total` pixels,
-/// preferring each column's snapshot width, never below its minimum.
-///
-/// Shrinking shaves from the left (the immediate neighbor first); growing hands
-/// the surplus to the immediate neighbor.
-pub(crate) fn cascade_right(snapshot: &[f32], mins: &[f32], total: f32) -> Vec<f32> {
-    if snapshot.is_empty() {
-        return Vec::new();
-    }
-
-    let mut result = snapshot.to_vec();
-    let current: f32 = snapshot.iter().sum();
-    let delta = total - current;
-
-    if delta < 0.0 {
-        let mut remaining = -delta;
-        for j in 0..result.len() {
-            let take = remaining.min(snapshot[j] - mins[j]).max(0.0);
-            result[j] = snapshot[j] - take;
-            remaining -= take;
-            if remaining <= 0.0 {
-                break;
-            }
-        }
-    } else if delta > 0.0 {
-        result[0] += delta;
-    }
-
-    result
-}
-
-/// Rebuilds the left group of a divider drag so it occupies `total` pixels,
-/// preferring each column's snapshot width, never below its minimum.
-///
-/// Shrinking shaves from the right (the dragged column gives first); growing
-/// hands the surplus to the rightmost column (the dragged column).
-pub(crate) fn cascade_left(snapshot: &[f32], mins: &[f32], total: f32) -> Vec<f32> {
-    if snapshot.is_empty() {
-        return Vec::new();
-    }
-
-    let mut result = snapshot.to_vec();
-    let current: f32 = snapshot.iter().sum();
-    let delta = total - current;
-
-    if delta < 0.0 {
-        let mut remaining = -delta;
-        for j in (0..result.len()).rev() {
-            let take = remaining.min(snapshot[j] - mins[j]).max(0.0);
-            result[j] = snapshot[j] - take;
-            remaining -= take;
-            if remaining <= 0.0 {
-                break;
-            }
-        }
-    } else if delta > 0.0 {
-        let last = result.len() - 1;
-        result[last] += delta;
-    }
-
-    result
-}
-
 /// New display widths for dragging internal `border` (the right edge of column
 /// `border`) so that edge lands at `desired_border_x` in content space.
 ///
-/// Total width is conserved. The left group `0..=border` absorbs changes via
-/// [`cascade_left`] (shrinks right-to-left) and the right group `border+1..n`
-/// absorbs changes via [`cascade_right`] (shrinks left-to-right).
+/// Dragging left cascades shrinkage through columns `border..=0`; the column
+/// immediately right of the divider (`border+1`) absorbs the freed space.
+/// Dragging right cascades shrinkage through columns `(border+1)..n`; column
+/// `border` absorbs. Columns on the opposite side are never touched.
+/// Total width is conserved.
 pub(crate) fn resize_columns(
     snapshot: &[f32],
     mins: &[f32],
@@ -162,26 +101,36 @@ pub(crate) fn resize_columns(
         return snapshot.to_vec();
     }
 
-    let total: f32 = snapshot.iter().sum();
-    let border_snap_x: f32 = snapshot[..=border].iter().sum();
-    let capacity_left: f32 = (0..=border).map(|j| snapshot[j] - mins[j]).sum();
-    let capacity_right: f32 = ((border + 1)..n).map(|j| snapshot[j] - mins[j]).sum();
-
-    let clamped = desired_border_x.clamp(
-        border_snap_x - capacity_left,
-        border_snap_x + capacity_right,
-    );
-
-    let left = cascade_left(&snapshot[..=border], &mins[..=border], clamped);
-    let right = cascade_right(
-        &snapshot[border + 1..],
-        &mins[border + 1..],
-        total - clamped,
-    );
-
     let mut result = snapshot.to_vec();
-    result[..=border].copy_from_slice(&left);
-    result[border + 1..].copy_from_slice(&right);
+    let border_snap_x: f32 = snapshot[..=border].iter().sum();
+    let delta = desired_border_x - border_snap_x;
+
+    if delta < 0.0 {
+        let mut remaining = -delta;
+        for i in (0..=border).rev() {
+            let can_shrink = result[i] - mins[i];
+            let shrink = remaining.min(can_shrink);
+            result[i] -= shrink;
+            remaining -= shrink;
+            if remaining == 0.0 {
+                break;
+            }
+        }
+        result[border + 1] += -delta - remaining;
+    } else if delta > 0.0 {
+        let mut remaining = delta;
+        for i in (border + 1)..n {
+            let can_shrink = result[i] - mins[i];
+            let shrink = remaining.min(can_shrink);
+            result[i] -= shrink;
+            remaining -= shrink;
+            if remaining == 0.0 {
+                break;
+            }
+        }
+        result[border] += delta - remaining;
+    }
+
     result
 }
 
@@ -329,50 +278,34 @@ mod tests {
     }
 
     #[test]
-    fn resize_columns_grows_left_and_cascades_right_to_mins() {
+    fn resize_columns_grows_border_and_shrinks_immediate_neighbor() {
         let snapshot = [100.0, 100.0, 100.0];
         let mins = [40.0, 40.0, 40.0];
-        // Drag border 0 far right: column 0 grows, both right columns hit min.
+        // Drag border 0 right by 40: col 0 grows, col 1 shrinks, col 2 untouched.
+        let widths = resize_columns(&snapshot, &mins, 0, 140.0);
+        assert!(approx_eq(&widths, &[140.0, 60.0, 100.0]));
+        assert_eq!(widths.iter().sum::<f32>(), 300.0);
+    }
+
+    #[test]
+    fn resize_columns_right_drag_cascades_into_further_columns() {
+        let snapshot = [100.0, 100.0, 100.0];
+        let mins = [40.0, 40.0, 40.0];
+        // Col 1 hits min (40) then col 2 also shrinks; col 0 grows by total absorbed.
         let widths = resize_columns(&snapshot, &mins, 0, 500.0);
         assert!(approx_eq(&widths, &[220.0, 40.0, 40.0]));
         assert_eq!(widths.iter().sum::<f32>(), 300.0);
     }
 
     #[test]
-    fn resize_columns_cascades_left_to_right_one_at_a_time() {
-        let snapshot = [100.0, 100.0, 100.0];
-        let mins = [40.0, 40.0, 40.0];
-        // Grow column 0 by 80: neighbor shrinks 60 to min, then column 2 gives 20.
-        let widths = resize_columns(&snapshot, &mins, 0, 180.0);
-        assert!(approx_eq(&widths, &[180.0, 40.0, 80.0]));
-    }
-
-    #[test]
-    fn resize_columns_stops_when_right_group_all_at_min() {
-        let snapshot = [100.0, 100.0, 100.0];
-        let mins = [40.0, 40.0, 40.0];
-        let far = resize_columns(&snapshot, &mins, 0, 10_000.0);
-        assert!(approx_eq(&far, &[220.0, 40.0, 40.0]));
-    }
-
-    #[test]
-    fn resize_columns_drag_left_past_column_min_cascades_to_left_neighbor() {
+    fn resize_columns_left_drag_cascades_into_further_columns() {
         // border 1 = right edge of column 1 (snapshot x = 200)
         let snapshot = [100.0, 100.0, 100.0];
         let mins = [40.0, 40.0, 40.0];
-        // Drag to x=120: column 1 gives 60 (to min=40), then column 0 gives 20.
-        let widths = resize_columns(&snapshot, &mins, 1, 120.0);
-        assert!(approx_eq(&widths, &[80.0, 40.0, 180.0]));
-        assert_eq!(widths.iter().sum::<f32>(), 300.0);
-    }
-
-    #[test]
-    fn resize_columns_drag_left_stops_when_left_group_all_at_min() {
-        let snapshot = [100.0, 100.0, 100.0];
-        let mins = [40.0, 40.0, 40.0];
-        // Past full capacity: both left columns clamped to min.
+        // Col 1 hits min (40) then col 0 also shrinks; col 2 grows by total absorbed.
         let widths = resize_columns(&snapshot, &mins, 1, 0.0);
         assert!(approx_eq(&widths, &[40.0, 40.0, 220.0]));
+        assert_eq!(widths.iter().sum::<f32>(), 300.0);
     }
 
     #[test]
