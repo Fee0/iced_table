@@ -707,7 +707,7 @@ where
                     shell.request_redraw();
                 }
             }
-            Event::Mouse(mouse::Event::CursorMoved { .. }) => match &state.drag {
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => match &mut state.drag {
                 Some(Drag::Column {
                     border,
                     snapshot,
@@ -716,9 +716,10 @@ where
                     let Some(position) = cursor.position_in(bounds) else {
                         return;
                     };
-                    let desired = position.x + scroll_x - grab_dx;
+                    let desired = position.x + scroll_x - *grab_dx;
                     let widths =
                         geometry::resize_columns(snapshot, &metrics.mins, *border, desired);
+                    *snapshot = widths.clone();
                     state.basis = widths;
                     shell.request_redraw();
                 }
