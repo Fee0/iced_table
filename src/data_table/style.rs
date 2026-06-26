@@ -24,7 +24,7 @@ pub enum Status {
 }
 
 /// The resolved appearance of a table.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Style {
     /// Header strip background.
     pub header_background: Color,

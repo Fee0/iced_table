@@ -458,6 +458,9 @@ struct CacheKeys {
     hover: Option<usize>,
     active: Option<usize>,
     hovered_thumb: Option<Axis>,
+    /// The resolved style the layers were drawn with. A theme switch changes
+    /// this, so every cached layer must be repainted when it differs.
+    style: Option<Style>,
 }
 
 impl CacheKeys {
@@ -473,6 +476,7 @@ impl CacheKeys {
             hover: None,
             active: None,
             hovered_thumb: None,
+            style: None,
         }
     }
 }
@@ -847,7 +851,14 @@ where
         let metrics = self.metrics(state, bounds.width);
         let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics, bounds.size());
 
-        self.reconcile_caches(state, bounds.size(), &metrics, scroll_x, scroll_y);
+        self.reconcile_caches(
+            state,
+            bounds.size(),
+            &metrics,
+            scroll_x,
+            scroll_y,
+            &resolved,
+        );
 
         let painter = Painter {
             style: &resolved,
@@ -1245,19 +1256,27 @@ where
         metrics: &Metrics,
         scroll_x: f32,
         scroll_y: f32,
+        style: &Style,
     ) {
         let mut keys = state.keys.borrow_mut();
 
-        let rows_dirty = keys.revision != self.revision
+        // A style change (e.g. a theme switch) recolors every layer.
+        let style_dirty = keys.style != Some(*style);
+
+        let rows_dirty = style_dirty
+            || keys.revision != self.revision
             || keys.size != size
             || keys.scroll_y != scroll_y
             || keys.scroll_x != scroll_x
             || keys.widths != metrics.widths;
-        let header_dirty =
-            keys.size != size || keys.widths != metrics.widths || keys.scroll_x != scroll_x;
+        let header_dirty = style_dirty
+            || keys.size != size
+            || keys.widths != metrics.widths
+            || keys.scroll_x != scroll_x;
         let highlight_dirty =
             rows_dirty || keys.hover != state.hovered_row || keys.active != self.active_row;
-        let overlay_dirty = keys.size != size
+        let overlay_dirty = style_dirty
+            || keys.size != size
             || keys.scroll_x != scroll_x
             || keys.scroll_y != scroll_y
             || keys.content_width != metrics.content_width
@@ -1286,6 +1305,7 @@ where
             hover: state.hovered_row,
             active: self.active_row,
             hovered_thumb: state.hovered_thumb,
+            style: Some(*style),
         };
     }
 

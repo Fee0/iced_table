@@ -34,20 +34,16 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         let columns = vec![
             Column::new("Name").width(200.0),
-            Column::new("Status")
-                .width(120.0)
-                .align(CellAlign::Center),
-            Column::new("Score")
-                .width(80.0)
-                .align(CellAlign::End),
+            Column::new("Status").width(120.0).align(CellAlign::Center),
+            Column::new("Score").width(80.0).align(CellAlign::End),
         ];
 
         let data = [
-            ("Alice",   "Active",   "98"),
-            ("Bob",     "Inactive", "74"),
-            ("Charlie", "Active",   "85"),
-            ("Diana",   "Pending",  "61"),
-            ("Eve",     "Active",   "92"),
+            ("Alice", "Active", "98"),
+            ("Bob", "Inactive", "74"),
+            ("Charlie", "Active", "85"),
+            ("Diana", "Pending", "61"),
+            ("Eve", "Active", "92"),
         ];
 
         let rows = data
