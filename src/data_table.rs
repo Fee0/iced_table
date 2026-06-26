@@ -482,8 +482,19 @@ struct Painter<'p> {
 
 impl Painter<'_> {
     /// Draws a full row: its background fill, dividers-aware cells, chevron, and
-    /// indent guides, all in the given [`Status`].
-    fn row(&self, frame: &mut Frame, row: &Row, row_index: usize, top_y: f32, status: Status) {
+    /// indent guides, all in the given [`Status`]. Cell content is clipped to
+    /// `clip` (the layer region) intersected with each cell's own rectangle.
+    #[allow(clippy::too_many_arguments)]
+    fn row(
+        &self,
+        frame: &mut Frame,
+        row: &Row,
+        row_index: usize,
+        top_y: f32,
+        status: Status,
+        scroll_x: f32,
+        clip: Rectangle,
+    ) {
         debug_assert!(
             row.cells.len() == self.columns.len(),
             "row {} has {} cells but table has {} columns",
@@ -504,7 +515,7 @@ impl Painter<'_> {
             let left = geometry::column_left(self.widths, index);
             let width = self.widths[index];
             if column.tree_column {
-                self.tree_cell(frame, row, index, center_y, status);
+                self.tree_cell(frame, row, index, center_y, status, scroll_x, clip);
             } else {
                 self.cell(
                     frame,
@@ -515,20 +526,36 @@ impl Painter<'_> {
                     center_y,
                     status,
                     column.font,
+                    scroll_x,
+                    clip,
                 );
             }
         }
     }
 
-    fn tree_cell(&self, frame: &mut Frame, row: &Row, index: usize, center_y: f32, status: Status) {
+    #[allow(clippy::too_many_arguments)]
+    fn tree_cell(
+        &self,
+        frame: &mut Frame,
+        row: &Row,
+        index: usize,
+        center_y: f32,
+        status: Status,
+        scroll_x: f32,
+        clip: Rectangle,
+    ) {
         let left = geometry::column_left(self.widths, index);
         let width = self.widths[index];
         let cell = &row.cells[index];
         let indent = f32::from(row.depth) * self.indent_step;
         let content_left = left + self.cell_padding_x + indent;
 
+        // Indent guides and chevron are drawn directly in the outer frame so
+        // they land in the same GPU mesh as the row background.  Nesting them
+        // inside `clipped_cell` (a `with_clip` sub-frame) would cause `paste`
+        // to flush their buffer before the background buffer, reversing the
+        // draw order and letting the background overwrite the chevron.
         self.indent_guides(frame, left, row.depth, center_y);
-
         if row.toggle != Toggle::None {
             let color = self.style.text_color(TextRole::Primary, status);
             let glyph_left = content_left + (self.chevron_box - self.chevron_glyph) / 2.0;
@@ -544,15 +571,25 @@ impl Painter<'_> {
 
         let text_left = content_left + self.chevron_box;
         let available = (left + width - self.cell_padding_x - text_left).max(0.0);
-        self.text(
+        self.clipped_cell(
             frame,
-            cell,
-            text_left,
-            available,
-            TextAlignment::Left,
+            left,
+            width,
             center_y,
-            status,
-            self.columns[index].font,
+            scroll_x,
+            clip,
+            |painter, frame| {
+                painter.text(
+                    frame,
+                    cell,
+                    text_left,
+                    available,
+                    TextAlignment::Left,
+                    center_y,
+                    status,
+                    painter.columns[index].font,
+                );
+            },
         );
     }
 
@@ -567,6 +604,8 @@ impl Painter<'_> {
         center_y: f32,
         status: Status,
         font_override: Option<Font>,
+        scroll_x: f32,
+        clip: Rectangle,
     ) {
         let inner = (width - 2.0 * self.cell_padding_x).max(0.0);
         let (x, alignment) = match align {
@@ -574,16 +613,59 @@ impl Painter<'_> {
             CellAlign::Center => (left + width / 2.0, TextAlignment::Center),
             CellAlign::End => (left + width - self.cell_padding_x, TextAlignment::Right),
         };
-        self.text(
+        self.clipped_cell(
             frame,
-            cell,
-            x,
-            inner,
-            alignment,
+            left,
+            width,
             center_y,
-            status,
-            font_override,
+            scroll_x,
+            clip,
+            |painter, frame| {
+                painter.text(
+                    frame,
+                    cell,
+                    x,
+                    inner,
+                    alignment,
+                    center_y,
+                    status,
+                    font_override,
+                );
+            },
         );
+    }
+
+    /// Clips `f`'s drawing to a single cell rectangle, intersected with `clip`
+    /// (the region the layer is already clipped to).
+    ///
+    /// `Frame::with_clip` builds a fresh sub-frame at the identity transform, so
+    /// the cell rectangle is expressed in screen coordinates (with `scroll_x`
+    /// applied) and the horizontal scroll translation is re-applied inside the
+    /// closure to keep the callers' logical coordinates correct.
+    #[allow(clippy::too_many_arguments)]
+    fn clipped_cell(
+        &self,
+        frame: &mut Frame,
+        left: f32,
+        width: f32,
+        center_y: f32,
+        scroll_x: f32,
+        clip: Rectangle,
+        f: impl FnOnce(&Self, &mut Frame),
+    ) {
+        let cell = Rectangle {
+            x: left - scroll_x,
+            y: center_y - self.row_height / 2.0,
+            width,
+            height: self.row_height,
+        };
+        let Some(region) = cell.intersection(&clip) else {
+            return;
+        };
+        frame.with_clip(region, |frame| {
+            frame.translate(Vector::new(-scroll_x, 0.0));
+            f(self, frame);
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1221,6 +1303,8 @@ where
                     center_y,
                     Status::Regular,
                     column.font,
+                    scroll_x,
+                    region,
                 );
             }
 
@@ -1253,7 +1337,15 @@ where
             );
             for index in range {
                 let top_y = self.header_height + index as f32 * self.row_height - scroll_y;
-                painter.row(frame, &self.rows[index], index, top_y, Status::Regular);
+                painter.row(
+                    frame,
+                    &self.rows[index],
+                    index,
+                    top_y,
+                    Status::Regular,
+                    scroll_x,
+                    body,
+                );
             }
             painter.dividers(frame, self.header_height, self.body_height(bounds));
         });
@@ -1284,11 +1376,27 @@ where
             // Active first so a row that is both hovered and active shows hover on top.
             if let Some(index) = active.filter(|index| Some(*index) != hovered) {
                 let top_y = self.header_height + index as f32 * self.row_height - scroll_y;
-                painter.row(frame, &self.rows[index], index, top_y, Status::Active);
+                painter.row(
+                    frame,
+                    &self.rows[index],
+                    index,
+                    top_y,
+                    Status::Active,
+                    scroll_x,
+                    body,
+                );
             }
             if let Some(index) = hovered {
                 let top_y = self.header_height + index as f32 * self.row_height - scroll_y;
-                painter.row(frame, &self.rows[index], index, top_y, Status::Hovered);
+                painter.row(
+                    frame,
+                    &self.rows[index],
+                    index,
+                    top_y,
+                    Status::Hovered,
+                    scroll_x,
+                    body,
+                );
             }
             if active.is_some() || hovered.is_some() {
                 painter.dividers(frame, self.header_height, self.body_height(bounds));

@@ -97,7 +97,7 @@ impl Demo {
         let columns = vec![
             Column::new("Name")
                 .width(220.0)
-                .min_width(120.0)
+                .min_width(20.0)
                 .tree_column(true),
             Column::new("Type")
                 .width(140.0)
