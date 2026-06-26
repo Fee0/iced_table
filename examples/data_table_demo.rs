@@ -161,6 +161,8 @@ fn table_style(theme: &iced::Theme, status: Status) -> iced_table::style::Style 
     let palette = theme.extended_palette();
     let mut style = iced_table::style::default(theme, status);
     style.row_background_alternate = Some(palette.background.weakest.color);
+    style.row_divider = Some(palette.background.weak.color);
+    style.border = Some(palette.background.weak.color);
     style
 }
 

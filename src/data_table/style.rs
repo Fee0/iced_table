@@ -58,6 +58,10 @@ pub struct Style {
     pub scrollbar_thumb: Color,
     /// Scrollbar thumb while hovered or dragged.
     pub scrollbar_thumb_hover: Color,
+    /// Horizontal divider drawn at the bottom of every row. `None` = no line.
+    pub row_divider: Option<Color>,
+    /// Outer border drawn around the full widget. `None` = no border.
+    pub border: Option<Color>,
 }
 
 impl Style {
@@ -140,6 +144,8 @@ pub fn default(theme: &Theme, _status: Status) -> Style {
         scrollbar_track: palette.background.weak.color,
         scrollbar_thumb: muted(palette.background.strong.color, 0.7),
         scrollbar_thumb_hover: palette.background.strong.color,
+        row_divider: None,
+        border: None,
     }
 }
 

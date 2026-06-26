@@ -733,7 +733,9 @@ impl Painter<'_> {
 
     fn indent_guides(&self, frame: &mut Frame, cell_left: f32, depth: u16, center_y: f32) {
         for ancestor in 0..depth {
-            let x = cell_left + self.cell_padding_x + f32::from(ancestor) * self.indent_step
+            let x = cell_left
+                + self.cell_padding_x
+                + f32::from(ancestor) * self.indent_step
                 + self.chevron_box / 2.0;
             frame.fill_rectangle(
                 Point::new(x, center_y - self.row_height / 2.0),
@@ -1371,6 +1373,14 @@ where
                     scroll_x,
                     body,
                 );
+                if let Some(color) = painter.style.row_divider {
+                    let y = top_y + self.row_height;
+                    frame.fill_rectangle(
+                        Point::new(0.0, y - painter.divider_width / 2.0),
+                        Size::new(painter.total_width(), painter.divider_width),
+                        color,
+                    );
+                }
             }
             painter.dividers(frame, self.header_height, self.body_height(bounds));
         });
@@ -1451,6 +1461,21 @@ where
                 style.scrollbar_thumb
             };
             scrollbar::draw(frame, &bar, style.scrollbar_track, thumb);
+        }
+        if let Some(color) = style.border {
+            let w = self.divider_width;
+            frame.fill_rectangle(Point::new(0.0, 0.0), Size::new(size.width, w), color);
+            frame.fill_rectangle(
+                Point::new(0.0, size.height - w),
+                Size::new(size.width, w),
+                color,
+            );
+            frame.fill_rectangle(Point::new(0.0, 0.0), Size::new(w, size.height), color);
+            frame.fill_rectangle(
+                Point::new(size.width - w, 0.0),
+                Size::new(w, size.height),
+                color,
+            );
         }
     }
 }
