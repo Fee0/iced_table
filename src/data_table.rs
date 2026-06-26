@@ -557,7 +557,6 @@ impl Painter<'_> {
         let content_left = left + self.cell_padding_x + indent;
 
         let text_left = content_left + self.chevron_box;
-        let available = (left + width - self.cell_padding_x - text_left).max(0.0);
         self.clipped_cell(
             frame,
             left,
@@ -584,7 +583,6 @@ impl Painter<'_> {
                     frame,
                     cell,
                     text_left,
-                    available,
                     TextAlignment::Left,
                     center_y,
                     status,
@@ -608,7 +606,6 @@ impl Painter<'_> {
         scroll_x: f32,
         clip: Rectangle,
     ) {
-        let inner = (width - 2.0 * self.cell_padding_x).max(0.0);
         let (x, alignment) = match align {
             CellAlign::Start => (left + self.cell_padding_x, TextAlignment::Left),
             CellAlign::Center => (left + width / 2.0, TextAlignment::Center),
@@ -622,16 +619,7 @@ impl Painter<'_> {
             scroll_x,
             clip,
             |painter, frame| {
-                painter.text(
-                    frame,
-                    cell,
-                    x,
-                    inner,
-                    alignment,
-                    center_y,
-                    status,
-                    font_override,
-                );
+                painter.text(frame, cell, x, alignment, center_y, status, font_override);
             },
         );
     }
@@ -675,7 +663,6 @@ impl Painter<'_> {
         frame: &mut Frame,
         cell: &Cell,
         x: f32,
-        max_width: f32,
         alignment: TextAlignment,
         center_y: f32,
         status: Status,
@@ -707,7 +694,7 @@ impl Painter<'_> {
             font,
             align_x: alignment,
             align_y: Vertical::Center,
-            max_width,
+            max_width: f32::INFINITY,
             ..Text::default()
         });
     }

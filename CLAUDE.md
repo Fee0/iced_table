@@ -1,4 +1,4 @@
-# Code Style Rules
+﻿# Code Style Rules
 
 Read and follow:
 
@@ -26,7 +26,6 @@ Do not whitelist warnings in Cargo.toml.
 
 # Canvas / wgpu Rendering Gotcha
 
-`Frame::paste` places sub-frame meshes (`frame.meshes`) **before** the parent's own pending geometry (`frame.buffers`). 
-This means anything drawn inside a `with_clip` sub-frame is submitted to the GPU before the parent's fills — reversing draw order and letting a later parent fill (e.g. a row background) overwrite the sub-frame content (e.g. a chevron).
+`Frame::paste` places sub-frame meshes **before** the parent's own pending buffer. Draw order in the final mesh list is determined by the order `with_clip` closures complete, not by call-site order.
 
-Rule: never put filled paths (meshes) inside `with_clip` if a background fill exists in the same parent frame. Use `with_clip` only for text, or draw fills in the parent frame before calling `with_clip`.
+Rule: if a background fill must appear beneath content drawn inside `with_clip`, wrap the background in its own `with_clip` first. That flushes it to a mesh immediately, so subsequent sub-frame meshes (cell content, chevrons) are appended after it.
