@@ -503,11 +503,17 @@ impl Painter<'_> {
             self.columns.len()
         );
         if let Some(background) = self.style.row_background(status, row_index) {
-            frame.fill_rectangle(
-                Point::new(0.0, top_y),
-                Size::new(self.total_width(), self.row_height),
-                background,
-            );
+            // Wrap in a sub-frame so the background is flushed to a mesh immediately.
+            // `paste` puts sub-frame meshes before the parent's own buffer, so anything
+            // drawn via `with_clip` in the cells below will come *after* this mesh —
+            // the correct draw order (background beneath cell content).
+            frame.with_clip(clip, |frame| {
+                frame.fill_rectangle(
+                    Point::new(0.0, top_y),
+                    Size::new(self.total_width(), self.row_height),
+                    background,
+                );
+            });
         }
 
         let center_y = top_y + self.row_height / 2.0;
@@ -550,25 +556,6 @@ impl Painter<'_> {
         let indent = f32::from(row.depth) * self.indent_step;
         let content_left = left + self.cell_padding_x + indent;
 
-        // Indent guides and chevron are drawn directly in the outer frame so
-        // they land in the same GPU mesh as the row background.  Nesting them
-        // inside `clipped_cell` (a `with_clip` sub-frame) would cause `paste`
-        // to flush their buffer before the background buffer, reversing the
-        // draw order and letting the background overwrite the chevron.
-        self.indent_guides(frame, left, row.depth, center_y);
-        if row.toggle != Toggle::None {
-            let color = self.style.text_color(TextRole::Primary, status);
-            let glyph_left = content_left + (self.chevron_box - self.chevron_glyph) / 2.0;
-            draw_chevron(
-                frame,
-                glyph_left,
-                center_y,
-                row.toggle == Toggle::Expanded,
-                color,
-                self.chevron_glyph,
-            );
-        }
-
         let text_left = content_left + self.chevron_box;
         let available = (left + width - self.cell_padding_x - text_left).max(0.0);
         self.clipped_cell(
@@ -579,6 +566,20 @@ impl Painter<'_> {
             scroll_x,
             clip,
             |painter, frame| {
+                painter.indent_guides(frame, left, row.depth, center_y);
+                if row.toggle != Toggle::None {
+                    let color = painter.style.text_color(TextRole::Primary, status);
+                    let glyph_left =
+                        content_left + (painter.chevron_box - painter.chevron_glyph) / 2.0;
+                    draw_chevron(
+                        frame,
+                        glyph_left,
+                        center_y,
+                        row.toggle == Toggle::Expanded,
+                        color,
+                        painter.chevron_glyph,
+                    );
+                }
                 painter.text(
                     frame,
                     cell,
