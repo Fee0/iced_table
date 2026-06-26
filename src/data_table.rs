@@ -732,8 +732,9 @@ impl Painter<'_> {
     }
 
     fn indent_guides(&self, frame: &mut Frame, cell_left: f32, depth: u16, center_y: f32) {
-        for level in 1..=depth {
-            let x = cell_left + self.cell_padding_x + f32::from(level) * self.indent_step;
+        for ancestor in 0..depth {
+            let x = cell_left + self.cell_padding_x + f32::from(ancestor) * self.indent_step
+                + self.chevron_box / 2.0;
             frame.fill_rectangle(
                 Point::new(x, center_y - self.row_height / 2.0),
                 Size::new(self.indent_guide_width, self.row_height),
