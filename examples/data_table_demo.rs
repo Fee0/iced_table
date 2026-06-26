@@ -2,6 +2,7 @@
 //! the consumer owns the collapse state and column widths, flattens its tree
 //! into a flat row list each frame, and maps row indices back to its domain.
 
+use iced::advanced::svg;
 use iced::widget::{column, container, text};
 use iced::{Element, Length, Task};
 use iced_table::data_table::style::Status;
@@ -132,6 +133,10 @@ impl Demo {
             .on_row_press(Message::RowPressed)
             .on_toggle_press(Message::TogglePressed)
             .on_hover(Message::Hovered)
+            .chevron_svg(
+                svg::Handle::from_path("assets/svg/chevron_right.svg"),
+                svg::Handle::from_path("assets/svg/chevron_down.svg"),
+            )
             .style(table_style);
 
         let status = text(format!(

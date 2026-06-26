@@ -21,6 +21,7 @@ use iced::advanced::Widget;
 use iced::advanced::graphics::geometry::Renderer as _;
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer;
+use iced::advanced::svg;
 use iced::advanced::text::Alignment as TextAlignment;
 use iced::advanced::widget::{Tree, tree};
 use iced::alignment::Vertical;
@@ -80,6 +81,8 @@ where
     on_row_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
     on_toggle_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
     on_hover: Option<Box<dyn Fn(Option<usize>) -> Message + 'a>>,
+    chevron_svg_collapsed: Option<svg::Handle>,
+    chevron_svg_expanded: Option<svg::Handle>,
     class: Theme::Class<'a>,
 }
 
@@ -111,6 +114,8 @@ where
             on_row_press: None,
             on_toggle_press: None,
             on_hover: None,
+            chevron_svg_collapsed: None,
+            chevron_svg_expanded: None,
             class: Theme::default(),
         }
     }
@@ -226,6 +231,15 @@ where
     /// Sets the callback fired when the hovered row changes.
     pub fn on_hover(mut self, callback: impl Fn(Option<usize>) -> Message + 'a) -> Self {
         self.on_hover = Some(Box::new(callback));
+        self
+    }
+
+    /// Replaces the path-drawn chevron with SVG icons.
+    ///
+    /// `collapsed` is shown when the row can be expanded; `expanded` when it can be collapsed.
+    pub fn chevron_svg(mut self, collapsed: svg::Handle, expanded: svg::Handle) -> Self {
+        self.chevron_svg_collapsed = Some(collapsed);
+        self.chevron_svg_expanded = Some(expanded);
         self
     }
 
@@ -478,6 +492,8 @@ struct Painter<'p> {
     indent_guide_width: f32,
     font_ui: Font,
     font_editor: Font,
+    chevron_svg_collapsed: Option<svg::Handle>,
+    chevron_svg_expanded: Option<svg::Handle>,
 }
 
 impl Painter<'_> {
@@ -570,14 +586,30 @@ impl Painter<'_> {
                     let color = painter.style.text_color(TextRole::Primary, status);
                     let glyph_left =
                         content_left + (painter.chevron_box - painter.chevron_glyph) / 2.0;
-                    draw_chevron(
-                        frame,
-                        glyph_left,
-                        center_y,
-                        row.toggle == Toggle::Expanded,
-                        color,
-                        painter.chevron_glyph,
-                    );
+                    let svg_handle = match row.toggle {
+                        Toggle::Collapsed => painter.chevron_svg_collapsed.as_ref(),
+                        Toggle::Expanded => painter.chevron_svg_expanded.as_ref(),
+                        Toggle::None => None,
+                    };
+                    if let Some(handle) = svg_handle {
+                        let size = painter.chevron_glyph;
+                        let bounds = Rectangle {
+                            x: glyph_left,
+                            y: center_y - size / 2.0,
+                            width: size,
+                            height: size,
+                        };
+                        frame.draw_svg(bounds, svg::Svg::new(handle.clone()).color(color));
+                    } else {
+                        draw_chevron(
+                            frame,
+                            glyph_left,
+                            center_y,
+                            row.toggle == Toggle::Expanded,
+                            color,
+                            painter.chevron_glyph,
+                        );
+                    }
                 }
                 painter.text(
                     frame,
@@ -828,6 +860,8 @@ where
             indent_guide_width: self.indent_guide_width,
             font_ui: self.font_ui,
             font_editor: self.font_editor,
+            chevron_svg_collapsed: self.chevron_svg_collapsed.clone(),
+            chevron_svg_expanded: self.chevron_svg_expanded.clone(),
         };
 
         let header = state.cache_header.draw(renderer, bounds.size(), |frame| {
@@ -1265,6 +1299,8 @@ where
         };
         let header_painter = Painter {
             style: &header_style,
+            chevron_svg_collapsed: painter.chevron_svg_collapsed.clone(),
+            chevron_svg_expanded: painter.chevron_svg_expanded.clone(),
             ..*painter
         };
 
