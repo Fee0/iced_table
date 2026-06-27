@@ -62,6 +62,9 @@ where
 {
     columns: Vec<Column>,
     rows: Vec<Row<'a>>,
+    row_offset: usize,
+    total_rows: usize,
+    on_scroll: Option<Box<dyn Fn(f32) -> Message + 'a>>,
     row_height: f32,
     header_height: f32,
     text_size: f32,
@@ -92,9 +95,13 @@ where
 {
     /// Creates a table from the given columns and (already-filtered, flat) rows.
     pub fn new(columns: Vec<Column>, rows: Vec<Row<'a>>) -> Self {
+        let total_rows = rows.len();
         Self {
             columns,
             rows,
+            row_offset: 0,
+            total_rows,
+            on_scroll: None,
             row_height: DEFAULT_ROW_HEIGHT,
             header_height: DEFAULT_HEADER_HEIGHT,
             text_size: DEFAULT_TEXT_SIZE,
@@ -234,6 +241,30 @@ where
         self
     }
 
+    /// Sets the index of the first row in `rows` within the full dataset.
+    ///
+    /// Use together with [`total_rows`](Self::total_rows) and [`on_scroll`](Self::on_scroll)
+    /// to pass a windowed subset of rows while keeping the scrollbar correct.
+    pub fn row_offset(mut self, offset: usize) -> Self {
+        self.row_offset = offset;
+        self
+    }
+
+    /// Sets the total number of rows in the full dataset.
+    ///
+    /// Defaults to `rows.len()`. When passing a windowed subset, set this to the
+    /// full count so the scrollbar reflects the real content height.
+    pub fn total_rows(mut self, count: usize) -> Self {
+        self.total_rows = count;
+        self
+    }
+
+    /// Sets a callback fired whenever the vertical scroll offset changes.
+    pub fn on_scroll(mut self, callback: impl Fn(f32) -> Message + 'a) -> Self {
+        self.on_scroll = Some(Box::new(callback));
+        self
+    }
+
     /// Replaces the path-drawn chevron with SVG icons.
     ///
     /// `collapsed` is shown when the row can be expanded; `expanded` when it can be collapsed.
@@ -267,7 +298,7 @@ where
         Metrics {
             widths: geometry::fit_widths(&basis, &mins, viewport_width),
             content_width: geometry::content_width(&mins, viewport_width),
-            content_height: self.rows.len() as f32 * self.row_height,
+            content_height: self.total_rows as f32 * self.row_height,
             mins,
         }
     }
@@ -276,7 +307,7 @@ where
     fn scroll_offsets(&self, state: &State, metrics: &Metrics, viewport: Size) -> (f32, f32) {
         let body_height = (viewport.height - self.header_height).max(0.0);
         let max_x = geometry::max_scroll_x(metrics.content_width, viewport.width);
-        let max_y = geometry::max_scroll(self.rows.len(), self.row_height, body_height);
+        let max_y = geometry::max_scroll(self.total_rows, self.row_height, body_height);
         (
             state.scroll_x.clamp(0.0, max_x),
             state.scroll_y.clamp(0.0, max_y),
@@ -955,12 +986,17 @@ where
 
                 let body_height = self.body_height(bounds);
                 let max_x = geometry::max_scroll_x(metrics.content_width, bounds.width);
-                let max_y = geometry::max_scroll(self.rows.len(), self.row_height, body_height);
+                let max_y = geometry::max_scroll(self.total_rows, self.row_height, body_height);
                 let next_x = (scroll_x - dx).clamp(0.0, max_x);
                 let next_y = (scroll_y - dy).clamp(0.0, max_y);
                 if next_x != state.scroll_x || next_y != state.scroll_y {
                     state.scroll_x = next_x;
                     state.scroll_y = next_y;
+                    if next_y != scroll_y {
+                        if let Some(f) = &self.on_scroll {
+                            shell.publish(f(next_y));
+                        }
+                    }
                     shell.capture_event();
                     shell.request_redraw();
                     self.handle_hover(state, &metrics, next_x, next_y, bounds, cursor, shell);
@@ -1002,7 +1038,12 @@ where
                         };
                         let offset = bar.offset_for_thumb(axis, content_len, lead);
                         match axis {
-                            Axis::Vertical => state.scroll_y = offset,
+                            Axis::Vertical => {
+                                state.scroll_y = offset;
+                                if let Some(f) = &self.on_scroll {
+                                    shell.publish(f(offset));
+                                }
+                            }
                             Axis::Horizontal => state.scroll_x = offset,
                         }
                         state.hovered_thumb = Some(axis);
@@ -1048,8 +1089,11 @@ where
                 {
                     let thumb_half = bar.thumb.height / 2.0;
                     let lead = position.y - thumb_half;
-                    state.scroll_y =
-                        bar.offset_for_thumb(Axis::Vertical, metrics.content_height, lead);
+                    let new_y = bar.offset_for_thumb(Axis::Vertical, metrics.content_height, lead);
+                    state.scroll_y = new_y;
+                    if let Some(f) = &self.on_scroll {
+                        shell.publish(f(new_y));
+                    }
                     state.drag = Some(Drag::Scroll {
                         axis: Axis::Vertical,
                         grab: thumb_half,
@@ -1093,30 +1137,35 @@ where
                     }
                 }
 
-                let Some(index) = geometry::row_at(
+                let Some(global) = geometry::row_at(
                     position.y,
                     self.header_height,
                     self.row_height,
                     scroll_y,
-                    self.rows.len(),
+                    self.total_rows,
                 ) else {
                     return;
                 };
 
-                let top_y = self.header_height + index as f32 * self.row_height - scroll_y;
+                let top_y = self.header_height + global as f32 * self.row_height - scroll_y;
                 let content_point = Point::new(position.x + scroll_x, position.y);
-                if let Some(zone) = self.chevron_zone(&metrics.widths, index, top_y)
-                    && zone.contains(content_point)
+                // chevron_zone indexes into self.rows, so convert to local index
+                if let Some(local) = global.checked_sub(self.row_offset)
+                    .filter(|&li| li < self.rows.len())
                 {
-                    if let Some(callback) = &self.on_toggle_press {
-                        shell.publish(callback(index));
-                        shell.capture_event();
+                    if let Some(zone) = self.chevron_zone(&metrics.widths, local, top_y)
+                        && zone.contains(content_point)
+                    {
+                        if let Some(callback) = &self.on_toggle_press {
+                            shell.publish(callback(global));
+                            shell.capture_event();
+                        }
+                        return;
                     }
-                    return;
                 }
 
                 if let Some(callback) = &self.on_row_press {
-                    shell.publish(callback(index));
+                    shell.publish(callback(global));
                     shell.capture_event();
                 }
             }
@@ -1174,7 +1223,7 @@ where
             self.header_height,
             self.row_height,
             scroll_y,
-            self.rows.len(),
+            self.total_rows,
         )
         .is_some();
         if over_row && (self.on_row_press.is_some() || self.on_toggle_press.is_some()) {
@@ -1236,7 +1285,7 @@ where
                 self.header_height,
                 self.row_height,
                 scroll_y,
-                self.rows.len(),
+                self.total_rows,
             )
         });
         if next != state.hovered_row {
@@ -1380,14 +1429,19 @@ where
                 scroll_y,
                 self.body_height(bounds),
                 self.row_height,
-                self.rows.len(),
+                self.total_rows,
             );
-            for index in range {
-                let top_y = self.header_height + index as f32 * self.row_height - scroll_y;
+            // Intersect the globally-visible range with the provided row window.
+            let window_end = self.row_offset + self.rows.len();
+            let draw_start = range.start.max(self.row_offset).min(window_end);
+            let draw_end = range.end.max(self.row_offset).min(window_end);
+            for global in draw_start..draw_end {
+                let local = global - self.row_offset;
+                let top_y = self.header_height + global as f32 * self.row_height - scroll_y;
                 painter.row(
                     frame,
-                    &self.rows[index],
-                    index,
+                    &self.rows[local],
+                    global,
                     top_y,
                     Status::Regular,
                     scroll_x,
@@ -1421,19 +1475,21 @@ where
             width: bounds.width,
             height: self.body_height(bounds),
         };
-        let row_count = self.rows.len();
-        let active = self.active_row.filter(|&index| index < row_count);
-        let hovered = hovered_row.filter(|&index| index < row_count);
+        let window_end = self.row_offset + self.rows.len();
+        let in_window = |i: usize| i >= self.row_offset && i < window_end;
+        let active = self.active_row.filter(|&i| i < self.total_rows && in_window(i));
+        let hovered = hovered_row.filter(|&i| i < self.total_rows && in_window(i));
 
         frame.with_clip(body, |frame| {
             frame.translate(Vector::new(-scroll_x, 0.0));
 
             // Active first so a row that is both hovered and active shows hover on top.
             if let Some(index) = active.filter(|index| Some(*index) != hovered) {
+                let local = index - self.row_offset;
                 let top_y = self.header_height + index as f32 * self.row_height - scroll_y;
                 painter.row(
                     frame,
-                    &self.rows[index],
+                    &self.rows[local],
                     index,
                     top_y,
                     Status::Active,
@@ -1442,10 +1498,11 @@ where
                 );
             }
             if let Some(index) = hovered {
+                let local = index - self.row_offset;
                 let top_y = self.header_height + index as f32 * self.row_height - scroll_y;
                 painter.row(
                     frame,
-                    &self.rows[index],
+                    &self.rows[local],
                     index,
                     top_y,
                     Status::Hovered,
