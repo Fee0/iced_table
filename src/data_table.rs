@@ -492,6 +492,8 @@ struct CacheKeys {
     /// The resolved style the layers were drawn with. A theme switch changes
     /// this, so every cached layer must be repainted when it differs.
     style: Option<Style>,
+    font_ui: Font,
+    font_editor: Font,
 }
 
 impl CacheKeys {
@@ -508,6 +510,8 @@ impl CacheKeys {
             active: None,
             hovered_thumb: None,
             style: None,
+            font_ui: Font::DEFAULT,
+            font_editor: Font::MONOSPACE,
         }
     }
 }
@@ -1317,11 +1321,14 @@ where
             || keys.size != size
             || keys.scroll_y != scroll_y
             || keys.scroll_x != scroll_x
-            || keys.widths != metrics.widths;
+            || keys.widths != metrics.widths
+            || keys.font_ui != self.font_ui
+            || keys.font_editor != self.font_editor;
         let header_dirty = style_dirty
             || keys.size != size
             || keys.widths != metrics.widths
-            || keys.scroll_x != scroll_x;
+            || keys.scroll_x != scroll_x
+            || keys.font_ui != self.font_ui;
         let highlight_dirty =
             rows_dirty || keys.hover != state.hovered_row || keys.active != self.active_row;
         let overlay_dirty = style_dirty
@@ -1355,6 +1362,8 @@ where
             active: self.active_row,
             hovered_thumb: state.hovered_thumb,
             style: Some(*style),
+            font_ui: self.font_ui,
+            font_editor: self.font_editor,
         };
     }
 
