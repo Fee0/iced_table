@@ -611,7 +611,11 @@ impl Painter<'_> {
         let indent = f32::from(row.depth) * self.indent_step;
         let content_left = left + self.cell_padding_x + indent;
 
-        let text_left = content_left + self.chevron_box;
+        let text_left = if row.toggle == Toggle::None {
+            content_left
+        } else {
+            content_left + self.chevron_box
+        };
         self.clipped_cell(
             frame,
             left,
@@ -996,10 +1000,10 @@ where
                 if next_x != state.scroll_x || next_y != state.scroll_y {
                     state.scroll_x = next_x;
                     state.scroll_y = next_y;
-                    if next_y != scroll_y {
-                        if let Some(f) = &self.on_scroll {
-                            shell.publish(f(next_y));
-                        }
+                    if next_y != scroll_y
+                        && let Some(f) = &self.on_scroll
+                    {
+                        shell.publish(f(next_y));
                     }
                     shell.capture_event();
                     shell.request_redraw();
@@ -1154,18 +1158,17 @@ where
                 let top_y = self.header_height + global as f32 * self.row_height - scroll_y;
                 let content_point = Point::new(position.x + scroll_x, position.y);
                 // chevron_zone indexes into self.rows, so convert to local index
-                if let Some(local) = global.checked_sub(self.row_offset)
+                if let Some(local) = global
+                    .checked_sub(self.row_offset)
                     .filter(|&li| li < self.rows.len())
+                    && let Some(zone) = self.chevron_zone(&metrics.widths, local, top_y)
+                    && zone.contains(content_point)
                 {
-                    if let Some(zone) = self.chevron_zone(&metrics.widths, local, top_y)
-                        && zone.contains(content_point)
-                    {
-                        if let Some(callback) = &self.on_toggle_press {
-                            shell.publish(callback(global));
-                            shell.capture_event();
-                        }
-                        return;
+                    if let Some(callback) = &self.on_toggle_press {
+                        shell.publish(callback(global));
+                        shell.capture_event();
                     }
+                    return;
                 }
 
                 if let Some(callback) = &self.on_row_press {
@@ -1486,7 +1489,9 @@ where
         };
         let window_end = self.row_offset + self.rows.len();
         let in_window = |i: usize| i >= self.row_offset && i < window_end;
-        let active = self.active_row.filter(|&i| i < self.total_rows && in_window(i));
+        let active = self
+            .active_row
+            .filter(|&i| i < self.total_rows && in_window(i));
         let hovered = hovered_row.filter(|&i| i < self.total_rows && in_window(i));
 
         frame.with_clip(body, |frame| {
