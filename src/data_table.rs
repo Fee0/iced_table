@@ -1371,10 +1371,20 @@ where
     }
 
     fn draw_header(&self, frame: &mut Frame, painter: &Painter, bounds: Rectangle, scroll_x: f32) {
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            Size::new(bounds.width, self.header_height),
-            painter.style.header_background,
+        frame.with_clip(
+            Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: bounds.width,
+                height: self.header_height,
+            },
+            |frame| {
+                frame.fill_rectangle(
+                    Point::ORIGIN,
+                    Size::new(bounds.width, self.header_height),
+                    painter.style.header_background,
+                );
+            },
         );
 
         let header_style = Style {
