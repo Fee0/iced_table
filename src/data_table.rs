@@ -1428,6 +1428,15 @@ where
 
             painter.dividers(frame, 0.0, self.header_height);
         });
+
+        if let Some(color) = painter.style.row_divider {
+            let y = self.header_height - painter.divider_width / 2.0;
+            frame.fill_rectangle(
+                Point::new(0.0, y),
+                Size::new(bounds.width, painter.divider_width),
+                color,
+            );
+        }
     }
 
     fn draw_rows(
