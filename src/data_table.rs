@@ -77,9 +77,11 @@ where
     divider_grab: f32,
     divider_width: f32,
     indent_guide_width: f32,
+    reserve_scrollbar_gutter: bool,
     font_ui: Font,
     font_editor: Font,
     active_row: Option<usize>,
+    target_scroll_row: Option<usize>,
     revision: u64,
     on_row_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
     on_toggle_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
@@ -114,9 +116,11 @@ where
             divider_grab: DEFAULT_DIVIDER_GRAB,
             divider_width: DEFAULT_DIVIDER_WIDTH,
             indent_guide_width: DEFAULT_INDENT_GUIDE_WIDTH,
+            reserve_scrollbar_gutter: false,
             font_ui: Font::DEFAULT,
             font_editor: Font::MONOSPACE,
             active_row: None,
+            target_scroll_row: None,
             revision: 0,
             on_row_press: None,
             on_toggle_press: None,
@@ -181,6 +185,14 @@ where
         self
     }
 
+    /// When set, columns are fitted into `viewport_width - scrollbar_thickness`
+    /// whenever the vertical scrollbar is showing, so the scrollbar occupies its
+    /// own gutter instead of overlapping the rightmost column's content.
+    pub fn reserve_scrollbar_gutter(mut self, reserve: bool) -> Self {
+        self.reserve_scrollbar_gutter = reserve;
+        self
+    }
+
     /// Sets the half-extent hit zone on each side of a column divider for resize dragging.
     pub fn divider_grab(mut self, divider_grab: f32) -> Self {
         self.divider_grab = divider_grab;
@@ -214,6 +226,14 @@ where
     /// Sets the consumer-resolved active (selected) row.
     pub fn active_row(mut self, active_row: Option<usize>) -> Self {
         self.active_row = active_row;
+        self
+    }
+
+    /// Scrolls to make `row` visible the first time this target is applied.
+    /// Subsequent frames with the same target are ignored so the user can
+    /// scroll freely after the initial jump. Pass `None` to clear the target.
+    pub fn scroll_to_row(mut self, row: Option<usize>) -> Self {
+        self.target_scroll_row = row;
         self
     }
 
@@ -285,6 +305,25 @@ where
 
     fn body_height(&self, bounds: Rectangle) -> f32 {
         (bounds.height - self.header_height).max(0.0)
+    }
+
+    /// Whether the vertical scrollbar is showing. Depends only on row count
+    /// and body height, never on column widths, so it can be resolved before
+    /// [`metrics`](Self::metrics) fits the columns.
+    fn vscroll_needed(&self, bounds: Rectangle) -> bool {
+        let content_height = self.total_rows as f32 * self.row_height;
+        scrollbar::visible(content_height, self.body_height(bounds))
+    }
+
+    /// The width available to fit columns into: the full bounds, minus the
+    /// vertical scrollbar's gutter when [`reserve_scrollbar_gutter`]
+    /// (Self::reserve_scrollbar_gutter) is set and the scrollbar is showing.
+    fn content_viewport_width(&self, bounds: Rectangle) -> f32 {
+        if self.reserve_scrollbar_gutter && self.vscroll_needed(bounds) {
+            (bounds.width - self.scrollbar_thickness).max(0.0)
+        } else {
+            bounds.width
+        }
     }
 
     /// The per-frame layout metrics shared by drawing and event handling.
@@ -422,6 +461,7 @@ struct Metrics {
 struct State {
     scroll_x: f32,
     scroll_y: f32,
+    applied_target_row: Option<usize>,
     hovered_row: Option<usize>,
     hovered_thumb: Option<Axis>,
     shift_held: bool,
@@ -439,6 +479,7 @@ impl Default for State {
         Self {
             scroll_x: 0.0,
             scroll_y: 0.0,
+            applied_target_row: None,
             hovered_row: None,
             hovered_thumb: None,
             shift_held: false,
@@ -862,10 +903,17 @@ where
 
     fn layout(
         &mut self,
-        _tree: &mut Tree,
+        tree: &mut Tree,
         _renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
+        if let Some(row) = self.target_scroll_row {
+            let state = tree.state.downcast_mut::<State>();
+            if state.applied_target_row != Some(row) {
+                state.scroll_y = row as f32 * self.row_height;
+                state.applied_target_row = Some(row);
+            }
+        }
         layout::atomic(limits, Length::Fill, Length::Fill)
     }
 
@@ -887,8 +935,10 @@ where
         let state = tree.state.downcast_ref::<State>();
         let resolved = <Theme as Catalog>::style(theme, &self.class, Status::Regular);
 
-        let metrics = self.metrics(state, bounds.width);
-        let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics, bounds.size());
+        let viewport_width = self.content_viewport_width(bounds);
+        let metrics = self.metrics(state, viewport_width);
+        let (scroll_x, scroll_y) =
+            self.scroll_offsets(state, &metrics, Size::new(viewport_width, bounds.height));
 
         self.reconcile_caches(
             state,
@@ -970,8 +1020,10 @@ where
         let state = tree.state.downcast_mut::<State>();
         state.ensure_basis(&self.columns);
 
-        let metrics = self.metrics(state, bounds.width);
-        let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics, bounds.size());
+        let viewport_width = self.content_viewport_width(bounds);
+        let metrics = self.metrics(state, viewport_width);
+        let (scroll_x, scroll_y) =
+            self.scroll_offsets(state, &metrics, Size::new(viewport_width, bounds.height));
 
         match event {
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
@@ -993,7 +1045,7 @@ where
                 }
 
                 let body_height = self.body_height(bounds);
-                let max_x = geometry::max_scroll_x(metrics.content_width, bounds.width);
+                let max_x = geometry::max_scroll_x(metrics.content_width, viewport_width);
                 let max_y = geometry::max_scroll(self.total_rows, self.row_height, body_height);
                 let next_x = (scroll_x - dx).clamp(0.0, max_x);
                 let next_y = (scroll_y - dy).clamp(0.0, max_y);
@@ -1128,7 +1180,8 @@ where
                     return;
                 }
 
-                if position.y < self.header_height && self.columns_resizable(&metrics, bounds.width)
+                if position.y < self.header_height
+                    && self.columns_resizable(&metrics, viewport_width)
                 {
                     let content_x = position.x + scroll_x;
                     if let Some(border) =
@@ -1207,8 +1260,10 @@ where
             return mouse::Interaction::None;
         };
 
-        let metrics = self.metrics(state, bounds.width);
-        let (scroll_x, scroll_y) = self.scroll_offsets(state, &metrics, bounds.size());
+        let viewport_width = self.content_viewport_width(bounds);
+        let metrics = self.metrics(state, viewport_width);
+        let (scroll_x, scroll_y) =
+            self.scroll_offsets(state, &metrics, Size::new(viewport_width, bounds.height));
 
         let (vertical, horizontal) = self.scrollbars(bounds.size(), &metrics, scroll_x, scroll_y);
         let over_thumb = vertical.is_some_and(|bar| bar.thumb.contains(position))
@@ -1218,7 +1273,7 @@ where
         }
 
         if position.y < self.header_height
-            && self.columns_resizable(&metrics, bounds.width)
+            && self.columns_resizable(&metrics, viewport_width)
             && geometry::divider_at(&metrics.widths, position.x + scroll_x, self.divider_grab)
                 .is_some()
         {
