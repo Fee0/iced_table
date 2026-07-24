@@ -2,6 +2,7 @@
 
 use iced::widget::{column, container};
 use iced::{Element, Length, Task};
+use iced_table::style::Status;
 use iced_table::{Cell, CellAlign, Column, DataTable, Row, TextRole};
 
 fn main() -> iced::Result {
@@ -59,7 +60,8 @@ impl App {
 
         let table = DataTable::new(columns, rows)
             .active_row(self.selected)
-            .on_row_press(Message::RowPressed);
+            .on_row_press(Message::RowPressed)
+            .style(table_style);
 
         container(column![table])
             .width(Length::Fill)
@@ -67,4 +69,13 @@ impl App {
             .padding(12)
             .into()
     }
+}
+
+/// A style with a border around the whole table and a divider under the header.
+fn table_style(theme: &iced::Theme, status: Status) -> iced_table::style::Style {
+    let palette = theme.extended_palette();
+    let mut style = iced_table::style::default(theme, status);
+    style.border = Some(palette.background.strong.color);
+    style.header_divider = Some(palette.background.strong.color);
+    style
 }
