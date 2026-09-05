@@ -173,6 +173,23 @@ pub(crate) fn visible_rows(
     first.min(row_count)..last.min(row_count)
 }
 
+/// The visible range narrowed to the row window the consumer supplied.
+///
+/// `row_offset` is the index of the window's first row within the full dataset
+/// and `window_len` is how many rows it holds. The result is always a valid
+/// sub-range of `row_offset..row_offset + window_len`, so an out-of-window
+/// visible range yields an empty range rather than an out-of-bounds index.
+pub(crate) fn drawn_rows(
+    visible: Range<usize>,
+    row_offset: usize,
+    window_len: usize,
+) -> Range<usize> {
+    let window_end = row_offset + window_len;
+    let start = visible.start.clamp(row_offset, window_end);
+    let end = visible.end.clamp(start, window_end);
+    start..end
+}
+
 /// The maximum vertical scroll offset that still keeps content in view.
 pub(crate) fn max_scroll(row_count: usize, row_height: f32, body_height: f32) -> f32 {
     let content = row_count as f32 * row_height;
@@ -351,6 +368,32 @@ mod tests {
     fn visible_range_is_empty_without_rows() {
         assert_eq!(visible_rows(0.0, 100.0, 20.0, 0), 0..0);
         assert_eq!(visible_rows(0.0, 0.0, 20.0, 10), 0..0);
+    }
+
+    #[test]
+    fn drawn_rows_is_the_visible_range_when_the_window_is_the_dataset() {
+        assert_eq!(drawn_rows(2..7, 0, 100), 2..7);
+    }
+
+    #[test]
+    fn drawn_rows_clips_to_a_window_that_starts_mid_dataset() {
+        // Window covers 5..15; the visible range hangs off both ends.
+        assert_eq!(drawn_rows(2..20, 5, 10), 5..15);
+    }
+
+    #[test]
+    fn drawn_rows_is_empty_when_the_window_sits_past_the_visible_range() {
+        assert_eq!(drawn_rows(0..10, 50, 10), 50..50);
+    }
+
+    #[test]
+    fn drawn_rows_is_empty_when_the_window_sits_before_the_visible_range() {
+        assert_eq!(drawn_rows(50..60, 0, 10), 10..10);
+    }
+
+    #[test]
+    fn drawn_rows_is_empty_for_an_empty_window() {
+        assert_eq!(drawn_rows(0..10, 4, 0), 4..4);
     }
 
     #[test]

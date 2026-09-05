@@ -26,7 +26,6 @@ struct Demo {
     visible: Vec<VisibleRow>,
     selected: Option<Vec<usize>>,
     hovered: Option<usize>,
-    revision: u64,
 }
 
 /// A node in the consumer's own tree. The widget never sees this type.
@@ -53,7 +52,6 @@ impl Demo {
             visible: Vec::new(),
             selected: None,
             hovered: None,
-            revision: 0,
         };
         demo.rebuild();
         demo
@@ -86,7 +84,6 @@ impl Demo {
                         node.collapsed = !node.collapsed;
                     }
                     self.rebuild();
-                    self.revision += 1;
                 }
             }
             Message::Hovered(row) => self.hovered = row,
@@ -129,7 +126,6 @@ impl Demo {
             .row_height(26.0)
             .header_height(30.0)
             .active_row(active)
-            .revision(self.revision)
             .on_row_press(Message::RowPressed)
             .on_toggle_press(Message::TogglePressed)
             .on_hover(Message::Hovered)

@@ -13,6 +13,8 @@ mod scrollbar;
 pub mod style;
 
 use std::cell::RefCell;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::ops::Range;
 
 use iced::advanced::Clipboard;
 use iced::advanced::Renderer as _;
@@ -82,7 +84,6 @@ where
     font_editor: Font,
     active_row: Option<usize>,
     target_scroll_row: Option<usize>,
-    revision: u64,
     on_row_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
     on_toggle_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
     on_hover: Option<Box<dyn Fn(Option<usize>) -> Message + 'a>>,
@@ -121,7 +122,6 @@ where
             font_editor: Font::MONOSPACE,
             active_row: None,
             target_scroll_row: None,
-            revision: 0,
             on_row_press: None,
             on_toggle_press: None,
             on_hover: None,
@@ -234,12 +234,6 @@ where
     /// scroll freely after the initial jump. Pass `None` to clear the target.
     pub fn scroll_to_row(mut self, row: Option<usize>) -> Self {
         self.target_scroll_row = row;
-        self
-    }
-
-    /// Bumps to invalidate the cached row geometry when row content changes.
-    pub fn revision(mut self, revision: u64) -> Self {
-        self.revision = revision;
         self
     }
 
@@ -421,6 +415,68 @@ where
         metrics.content_width <= viewport_width + 0.5
     }
 
+    /// Every pixel knob the cached layers lay themselves out with.
+    fn sizing(&self) -> Sizing {
+        Sizing {
+            row_height: self.row_height,
+            header_height: self.header_height,
+            text_size: self.text_size,
+            cell_padding_x: self.cell_padding_x,
+            indent_step: self.indent_step,
+            chevron_box: self.chevron_box,
+            chevron_glyph: self.chevron_glyph,
+            scrollbar_thickness: self.scrollbar_thickness,
+            scrollbar_min_thumb: self.scrollbar_min_thumb,
+            divider_width: self.divider_width,
+            indent_guide_width: self.indent_guide_width,
+            reserve_scrollbar_gutter: self.reserve_scrollbar_gutter,
+        }
+    }
+
+    /// Hashes the column properties the header and cells are drawn from.
+    ///
+    /// `width` and `min_width` are left out: they already reach the cache keys
+    /// through the fitted [`Metrics::widths`] and [`Metrics::content_width`].
+    fn columns_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        for column in &self.columns {
+            column.header.hash(&mut hasher);
+            column.align.hash(&mut hasher);
+            column.tree_column.hash(&mut hasher);
+            column.font.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    /// Hashes the row content that is actually drawn, so a change to a visible
+    /// cell invalidates the row layers without the consumer signalling it.
+    ///
+    /// Only the `drawn` window is hashed — a handful of rows, not the dataset —
+    /// which keeps this cheap enough to run every frame. Rows outside the window
+    /// are clipped away, so a change there cannot show up on screen.
+    fn rows_hash(&self, drawn: Range<usize>) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.row_offset.hash(&mut hasher);
+        self.chevron_svg_collapsed.hash(&mut hasher);
+        self.chevron_svg_expanded.hash(&mut hasher);
+        for global in drawn {
+            self.rows[global - self.row_offset].hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    /// The half-open range of dataset row indices this frame paints: the
+    /// virtualized visible range narrowed to the supplied row window.
+    fn drawn_rows(&self, bounds: Rectangle, scroll_y: f32) -> Range<usize> {
+        let visible = geometry::visible_rows(
+            scroll_y,
+            self.body_height(bounds),
+            self.row_height,
+            self.total_rows,
+        );
+        geometry::drawn_rows(visible, self.row_offset, self.rows.len())
+    }
+
     /// The tree column index, if any column hosts the collapse affordance.
     fn tree_column(&self) -> Option<usize> {
         self.columns.iter().position(|column| column.tree_column)
@@ -526,9 +582,34 @@ struct Extent {
     visible: Rectangle,
 }
 
+/// Every pixel knob the cached layers lay themselves out with, bundled so they
+/// can be compared as one cache key. Consumers rarely change these, so treating
+/// a difference as invalidating all four layers costs nothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Sizing {
+    row_height: f32,
+    header_height: f32,
+    text_size: f32,
+    cell_padding_x: f32,
+    indent_step: f32,
+    chevron_box: f32,
+    chevron_glyph: f32,
+    scrollbar_thickness: f32,
+    scrollbar_min_thumb: f32,
+    divider_width: f32,
+    indent_guide_width: f32,
+    reserve_scrollbar_gutter: bool,
+}
+
 /// The inputs each cached layer was last drawn against, for invalidation.
 struct CacheKeys {
-    revision: u64,
+    /// Hash of the column properties the header and cells are drawn from.
+    columns: u64,
+    /// Hash of the row content that was actually painted.
+    rows: u64,
+    sizing: Sizing,
+    total_rows: usize,
+    row_offset: usize,
     scroll_x: f32,
     scroll_y: f32,
     size: Size,
@@ -556,7 +637,25 @@ impl CacheKeys {
     /// Keys that never match a real frame, forcing the first draw to populate.
     fn stale() -> Self {
         Self {
-            revision: u64::MAX,
+            columns: 0,
+            rows: 0,
+            // NaN never compares equal, so this alone guarantees the first draw.
+            sizing: Sizing {
+                row_height: f32::NAN,
+                header_height: f32::NAN,
+                text_size: f32::NAN,
+                cell_padding_x: f32::NAN,
+                indent_step: f32::NAN,
+                chevron_box: f32::NAN,
+                chevron_glyph: f32::NAN,
+                scrollbar_thickness: f32::NAN,
+                scrollbar_min_thumb: f32::NAN,
+                divider_width: f32::NAN,
+                indent_guide_width: f32::NAN,
+                reserve_scrollbar_gutter: false,
+            },
+            total_rows: 0,
+            row_offset: 0,
             scroll_x: f32::NAN,
             scroll_y: f32::NAN,
             size: Size::ZERO,
@@ -874,6 +973,25 @@ impl Painter<'_> {
     }
 }
 
+/// Whether the on-screen slice grew beyond the one the layers were drawn against.
+///
+/// `iced_wgpu` bakes each glyph's scissor at prepare time as
+/// `layer_bounds ∩ text_clip` and only re-prepares when the geometry version or
+/// the layer transformation changes — never when the layer clip alone moves. A
+/// *shrinking* slice is still enforced by the render pass scissor, which is taken
+/// from the current layer bounds, so only a growing slice can leave cached text
+/// clipped to an area that is now too tight.
+///
+/// A `previous` holding NaN (see [`CacheKeys::stale`]) never contains anything,
+/// which is what forces the first draw.
+fn clip_grew(previous: Rectangle, current: Rectangle) -> bool {
+    let contained = current.x >= previous.x
+        && current.y >= previous.y
+        && current.x + current.width <= previous.x + previous.width
+        && current.y + current.height <= previous.y + previous.height;
+    !contained
+}
+
 /// Draws a filled chevron triangle centered vertically on `center_y`.
 fn draw_chevron(
     frame: &mut Frame,
@@ -976,6 +1094,7 @@ where
             &metrics,
             scroll_x,
             scroll_y,
+            self.rows_hash(self.drawn_rows(bounds, scroll_y)),
             &resolved,
         );
 
@@ -1050,19 +1169,53 @@ where
         let state = tree.state.downcast_mut::<State>();
         state.ensure_basis(&self.columns);
 
+        // The events that need no layout math at all.
+        match event {
+            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                state.shift_held = modifiers.shift();
+                return;
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                if state.drag.is_some() =>
+            {
+                state.drag = None;
+                shell.capture_event();
+                return;
+            }
+            _ => {}
+        }
+
+        // Everything below fits the columns, which allocates. Drop the events that
+        // cannot move this table first, so ordinary pointer traffic elsewhere in
+        // the window costs nothing.
+        let concerns_table = match event {
+            Event::Mouse(mouse::Event::WheelScrolled { .. }) => {
+                cursor.position_over(bounds).is_some()
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                cursor.position_in(bounds).is_some()
+            }
+            // A cursor outside the table still matters while dragging, or when it
+            // left a highlight behind that has to be cleared.
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                state.drag.is_some()
+                    || cursor.position_in(bounds).is_some()
+                    || state.hovered_row.is_some()
+                    || state.hovered_thumb.is_some()
+            }
+            _ => false,
+        };
+        if !concerns_table {
+            return;
+        }
+
         let viewport_width = self.content_viewport_width(bounds);
         let metrics = self.metrics(state, viewport_width);
         let (scroll_x, scroll_y) =
             self.scroll_offsets(state, &metrics, Size::new(viewport_width, bounds.height));
 
         match event {
-            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
-                state.shift_held = modifiers.shift();
-            }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                if cursor.position_over(bounds).is_none() {
-                    return;
-                }
                 let (mut dx, mut dy) = match delta {
                     mouse::ScrollDelta::Lines { x, y } => {
                         (x * self.row_height, y * self.row_height)
@@ -1259,12 +1412,6 @@ where
                     shell.capture_event();
                 }
             }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-                if state.drag.is_some() =>
-            {
-                state.drag = None;
-                shell.capture_event();
-            }
             _ => {}
         }
     }
@@ -1390,6 +1537,7 @@ where
     }
 
     /// Clears any cached layer whose inputs changed since the last draw.
+    #[allow(clippy::too_many_arguments)]
     fn reconcile_caches(
         &self,
         state: &State,
@@ -1397,34 +1545,48 @@ where
         metrics: &Metrics,
         scroll_x: f32,
         scroll_y: f32,
+        rows_hash: u64,
         style: &Style,
     ) {
         let Extent { size, visible } = extent;
+        let sizing = self.sizing();
+        let columns_hash = self.columns_hash();
         let mut keys = state.keys.borrow_mut();
 
         // A style change (e.g. a theme switch) recolors every layer.
         let style_dirty = keys.style != Some(*style);
+        // Only the layers that carry text or images care about the visible slice.
+        let clip_dirty = clip_grew(keys.visible, visible);
 
         let rows_dirty = style_dirty
-            || keys.revision != self.revision
+            || clip_dirty
+            || keys.rows != rows_hash
+            || keys.columns != columns_hash
+            || keys.sizing != sizing
+            || keys.total_rows != self.total_rows
+            || keys.row_offset != self.row_offset
             || keys.size != size
-            || keys.visible != visible
             || keys.scroll_y != scroll_y
             || keys.scroll_x != scroll_x
             || keys.widths != metrics.widths
             || keys.font_ui != self.font_ui
             || keys.font_editor != self.font_editor;
         let header_dirty = style_dirty
+            || clip_dirty
+            || keys.columns != columns_hash
+            || keys.sizing != sizing
             || keys.size != size
-            || keys.visible != visible
             || keys.widths != metrics.widths
             || keys.scroll_x != scroll_x
             || keys.font_ui != self.font_ui;
         let highlight_dirty =
             rows_dirty || keys.hover != state.hovered_row || keys.active != self.active_row;
+        // The overlay is pure meshes, so it has no prepared clip that can go stale
+        // and does not need `clip_grew`.
         let overlay_dirty = style_dirty
+            || keys.sizing != sizing
+            || keys.total_rows != self.total_rows
             || keys.size != size
-            || keys.visible != visible
             || keys.scroll_x != scroll_x
             || keys.scroll_y != scroll_y
             || keys.content_width != metrics.content_width
@@ -1444,7 +1606,11 @@ where
         }
 
         *keys = CacheKeys {
-            revision: self.revision,
+            columns: columns_hash,
+            rows: rows_hash,
+            sizing,
+            total_rows: self.total_rows,
+            row_offset: self.row_offset,
             scroll_x,
             scroll_y,
             size,
@@ -1546,17 +1712,7 @@ where
         frame.with_clip(body, |frame| {
             frame.translate(Vector::new(-scroll_x, 0.0));
 
-            let range = geometry::visible_rows(
-                scroll_y,
-                self.body_height(bounds),
-                self.row_height,
-                self.total_rows,
-            );
-            // Intersect the globally-visible range with the provided row window.
-            let window_end = self.row_offset + self.rows.len();
-            let draw_start = range.start.max(self.row_offset).min(window_end);
-            let draw_end = range.end.max(self.row_offset).min(window_end);
-            for global in draw_start..draw_end {
+            for global in self.drawn_rows(bounds, scroll_y) {
                 let local = global - self.row_offset;
                 let top_y = self.header_height + global as f32 * self.row_height - scroll_y;
                 painter.row(
@@ -1687,5 +1843,57 @@ where
 {
     fn from(table: DataTable<'a, Message, Theme>) -> Self {
         Element::new(table)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: f32, y: f32, width: f32, height: f32) -> Rectangle {
+        Rectangle {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn clip_is_unchanged_when_the_slice_is_identical() {
+        let slice = rect(0.0, 0.0, 200.0, 400.0);
+        assert!(!clip_grew(slice, slice));
+    }
+
+    #[test]
+    fn clip_shrinking_does_not_count_as_growth() {
+        // The render pass scissor already enforces a tighter slice.
+        let previous = rect(0.0, 0.0, 200.0, 400.0);
+        assert!(!clip_grew(previous, rect(10.0, 20.0, 100.0, 200.0)));
+    }
+
+    #[test]
+    fn clip_growing_on_any_edge_counts_as_growth() {
+        let previous = rect(10.0, 20.0, 100.0, 200.0);
+        assert!(clip_grew(previous, rect(0.0, 20.0, 110.0, 200.0)));
+        assert!(clip_grew(previous, rect(10.0, 0.0, 100.0, 220.0)));
+        assert!(clip_grew(previous, rect(10.0, 20.0, 101.0, 200.0)));
+        assert!(clip_grew(previous, rect(10.0, 20.0, 100.0, 201.0)));
+    }
+
+    #[test]
+    fn clip_sliding_sideways_counts_as_growth() {
+        // An ancestor scrolling the table past a fixed window reveals rows the
+        // cached layers were never prepared for.
+        let previous = rect(0.0, 0.0, 200.0, 400.0);
+        assert!(clip_grew(previous, rect(0.0, 100.0, 200.0, 400.0)));
+    }
+
+    #[test]
+    fn stale_keys_always_report_growth() {
+        assert!(clip_grew(
+            CacheKeys::stale().visible,
+            rect(0.0, 0.0, 200.0, 400.0)
+        ));
     }
 }

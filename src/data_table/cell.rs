@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 /// One cell's worth of content. The widget resolves [`TextRole`] to a concrete
 /// color through the active style, so consumers never pass raw colors.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub enum Cell<'a> {
     /// Renders nothing.
     Empty,
@@ -61,7 +61,7 @@ impl<'a> Cell<'a> {
 ///
 /// A `Primary` or `Accent` cell automatically flips to the on-active color when
 /// its row is hovered or active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TextRole {
     /// Default foreground.
     #[default]
@@ -73,7 +73,7 @@ pub enum TextRole {
 }
 
 /// Font weight for a text cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Weight {
     /// Regular weight.
     #[default]
@@ -83,7 +83,7 @@ pub enum Weight {
 }
 
 /// Which font family a text cell uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum FontKind {
     /// The proportional UI font.
     #[default]

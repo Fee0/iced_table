@@ -84,7 +84,7 @@ impl Column {
 }
 
 /// Horizontal alignment of a cell's contents within its column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum CellAlign {
     /// Left-aligned.
     #[default]

@@ -7,7 +7,7 @@ use crate::data_table::cell::Cell;
 ///
 /// The row owns its cells, so the consumer can build them transiently each
 /// frame (e.g. inside `view`) without holding them in long-lived storage.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub struct Row<'a> {
     /// Indentation level for the tree column (the collapse hook).
     pub depth: u16,
@@ -41,7 +41,7 @@ impl<'a> Row<'a> {
 }
 
 /// The expand/collapse affordance state of a row's tree column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Toggle {
     /// No chevron is drawn (a leaf, or a non-tree row).
     #[default]
