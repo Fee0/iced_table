@@ -519,12 +519,27 @@ enum Drag {
     Scroll { axis: Axis, grab: f32 },
 }
 
+/// How much room the table has, and how much of that room is on screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Extent {
+    size: Size,
+    visible: Rectangle,
+}
+
 /// The inputs each cached layer was last drawn against, for invalidation.
 struct CacheKeys {
     revision: u64,
     scroll_x: f32,
     scroll_y: f32,
     size: Size,
+    /// The slice of the table that is actually on screen, relative to its own bounds.
+    ///
+    /// Distinct from `size`: an ancestor that gives the table its full content height and scrolls
+    /// it — rather than sizing it to the viewport and letting it scroll itself — leaves `size`
+    /// fixed while this moves. The cached layers are drawn through it, and `iced_wgpu` only
+    /// re-uploads cached text when the geometry's version changes, so a layer kept across a
+    /// change here keeps text prepared for the old slice.
+    visible: Rectangle,
     widths: Vec<f32>,
     content_width: f32,
     hover: Option<usize>,
@@ -545,6 +560,7 @@ impl CacheKeys {
             scroll_x: f32::NAN,
             scroll_y: f32::NAN,
             size: Size::ZERO,
+            visible: Rectangle::new(Point::new(f32::NAN, f32::NAN), Size::ZERO),
             widths: Vec::new(),
             content_width: f32::NAN,
             hover: None,
@@ -925,7 +941,7 @@ where
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
-        _viewport: &Rectangle,
+        viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -940,9 +956,23 @@ where
         let (scroll_x, scroll_y) =
             self.scroll_offsets(state, &metrics, Size::new(viewport_width, bounds.height));
 
+        // Relative to the table's own origin, so scrolling the *table* past a fixed window and
+        // moving that window over a fixed table are told apart by `scroll_y` and this in turn.
+        let visible = bounds
+            .intersection(viewport)
+            .map(|slice| Rectangle {
+                x: slice.x - bounds.x,
+                y: slice.y - bounds.y,
+                ..slice
+            })
+            .unwrap_or(Rectangle::new(Point::ORIGIN, Size::ZERO));
+
         self.reconcile_caches(
             state,
-            bounds.size(),
+            Extent {
+                size: bounds.size(),
+                visible,
+            },
             &metrics,
             scroll_x,
             scroll_y,
@@ -1363,12 +1393,13 @@ where
     fn reconcile_caches(
         &self,
         state: &State,
-        size: Size,
+        extent: Extent,
         metrics: &Metrics,
         scroll_x: f32,
         scroll_y: f32,
         style: &Style,
     ) {
+        let Extent { size, visible } = extent;
         let mut keys = state.keys.borrow_mut();
 
         // A style change (e.g. a theme switch) recolors every layer.
@@ -1377,6 +1408,7 @@ where
         let rows_dirty = style_dirty
             || keys.revision != self.revision
             || keys.size != size
+            || keys.visible != visible
             || keys.scroll_y != scroll_y
             || keys.scroll_x != scroll_x
             || keys.widths != metrics.widths
@@ -1384,6 +1416,7 @@ where
             || keys.font_editor != self.font_editor;
         let header_dirty = style_dirty
             || keys.size != size
+            || keys.visible != visible
             || keys.widths != metrics.widths
             || keys.scroll_x != scroll_x
             || keys.font_ui != self.font_ui;
@@ -1391,6 +1424,7 @@ where
             rows_dirty || keys.hover != state.hovered_row || keys.active != self.active_row;
         let overlay_dirty = style_dirty
             || keys.size != size
+            || keys.visible != visible
             || keys.scroll_x != scroll_x
             || keys.scroll_y != scroll_y
             || keys.content_width != metrics.content_width
@@ -1414,6 +1448,7 @@ where
             scroll_x,
             scroll_y,
             size,
+            visible,
             widths: metrics.widths.clone(),
             content_width: metrics.content_width,
             hover: state.hovered_row,
