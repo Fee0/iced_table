@@ -6,7 +6,12 @@ use iced::advanced::svg;
 use iced::widget::{column, container, text};
 use iced::{Element, Length, Task};
 use iced_table::data_table::style::Status;
-use iced_table::{Cell, CellAlign, Column, DataTable, FontKind, Row, TextRole, Toggle, Weight};
+use iced_table::{
+    Cell, CellAlign, Column, DataTable, FontKind, Row, Sort, TextRole, Toggle, Weight, sort,
+};
+
+/// Index of the sortable address column, shared by the header and the comparator.
+const ADDRESS_COLUMN: usize = 2;
 
 fn main() -> iced::Result {
     iced::application(Demo::new, Demo::update, Demo::view)
@@ -19,17 +24,27 @@ enum Message {
     RowPressed(usize),
     TogglePressed(usize),
     Hovered(Option<usize>),
+    Sorted(Sort),
 }
 
 struct Demo {
     roots: Vec<Node>,
     visible: Vec<VisibleRow>,
-    selected: Option<Vec<usize>>,
+    selected: Option<NodeId>,
     hovered: Option<usize>,
+    sort: Option<Sort>,
 }
+
+/// A node's identity, stable across sorting.
+///
+/// A tree path would not do: it is a list of sibling *positions*, so sorting
+/// leaves it pointing at whichever node moved into that slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NodeId(usize);
 
 /// A node in the consumer's own tree. The widget never sees this type.
 struct Node {
+    id: NodeId,
     name: String,
     kind: Option<&'static str>,
     address: u64,
@@ -39,6 +54,7 @@ struct Node {
 
 /// A flattened, currently-visible row, keyed by its tree path.
 struct VisibleRow {
+    id: NodeId,
     path: Vec<usize>,
     depth: u16,
     toggle: Toggle,
@@ -52,6 +68,7 @@ impl Demo {
             visible: Vec::new(),
             selected: None,
             hovered: None,
+            sort: None,
         };
         demo.rebuild();
         demo
@@ -76,7 +93,7 @@ impl Demo {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::RowPressed(index) => {
-                self.selected = self.visible.get(index).map(|row| row.path.clone());
+                self.selected = self.visible.get(index).map(|row| row.id);
             }
             Message::TogglePressed(index) => {
                 if let Some(path) = self.visible.get(index).map(|row| row.path.clone()) {
@@ -87,6 +104,11 @@ impl Demo {
                 }
             }
             Message::Hovered(row) => self.hovered = row,
+            Message::Sorted(sort) => {
+                self.sort = Some(sort);
+                sort_siblings(&mut self.roots, sort);
+                self.rebuild();
+            }
         }
         Task::none()
     }
@@ -96,7 +118,8 @@ impl Demo {
             Column::new("Name")
                 .width(220.0)
                 .min_width(20.0)
-                .tree_column(true),
+                .tree_column(true)
+                .sortable(true),
             Column::new("Type")
                 .width(140.0)
                 .min_width(80.0)
@@ -104,7 +127,8 @@ impl Demo {
             Column::new("Address")
                 .width(120.0)
                 .min_width(90.0)
-                .align(CellAlign::End),
+                .align(CellAlign::End)
+                .sortable(true),
         ];
 
         let rows = self
@@ -119,18 +143,23 @@ impl Demo {
 
         let active = self
             .selected
-            .as_ref()
-            .and_then(|path| self.visible.iter().position(|row| &row.path == path));
+            .and_then(|id| self.visible.iter().position(|row| row.id == id));
 
         let table = DataTable::new(columns, rows)
             .row_height(26.0)
             .header_height(30.0)
             .active_row(active)
+            .sort(self.sort)
             .on_row_press(Message::RowPressed)
             .on_toggle_press(Message::TogglePressed)
             .on_hover(Message::Hovered)
+            .on_sort(Message::Sorted)
             .chevron_svg(
                 svg::Handle::from_path("assets/svg/chevron_right.svg"),
+                svg::Handle::from_path("assets/svg/chevron_down.svg"),
+            )
+            .sort_chevron_svg(
+                svg::Handle::from_path("assets/svg/chevron_up.svg"),
                 svg::Handle::from_path("assets/svg/chevron_down.svg"),
             )
             .style(table_style);
@@ -162,6 +191,23 @@ fn table_style(theme: &iced::Theme, status: Status) -> iced_table::style::Style 
     style
 }
 
+/// Reorders every sibling group in place, so a sorted tree keeps its shape.
+fn sort_siblings(nodes: &mut [Node], sort: Sort) {
+    nodes.sort_by(|a, b| {
+        let order = match sort.column {
+            ADDRESS_COLUMN => a.address.cmp(&b.address),
+            _ => a.name.cmp(&b.name),
+        };
+        match sort.direction {
+            sort::Direction::Ascending => order,
+            sort::Direction::Descending => order.reverse(),
+        }
+    });
+    for node in nodes {
+        sort_siblings(&mut node.children, sort);
+    }
+}
+
 /// Flattens the tree into visible rows with owned cells, honoring collapse state.
 fn flatten(nodes: &[Node], depth: u16, path: &mut Vec<usize>, visible: &mut Vec<VisibleRow>) {
     for (index, node) in nodes.iter().enumerate() {
@@ -185,6 +231,7 @@ fn flatten(nodes: &[Node], depth: u16, path: &mut Vec<usize>, visible: &mut Vec<
         };
 
         visible.push(VisibleRow {
+            id: node.id,
             path: path.clone(),
             depth,
             toggle,
@@ -207,6 +254,7 @@ fn flatten(nodes: &[Node], depth: u16, path: &mut Vec<usize>, visible: &mut Vec<
 
 fn leaf(name: &str, kind: &'static str, address: u64) -> Node {
     Node {
+        id: NodeId(0),
         name: name.to_string(),
         kind: Some(kind),
         address,
@@ -217,6 +265,7 @@ fn leaf(name: &str, kind: &'static str, address: u64) -> Node {
 
 fn folder(name: &str, address: u64, children: Vec<Node>) -> Node {
     Node {
+        id: NodeId(0),
         name: name.to_string(),
         kind: None,
         address,
@@ -245,5 +294,15 @@ fn sample_tree() -> Vec<Node> {
             ],
         ));
     }
+    assign_ids(&mut roots, &mut 0);
     roots
+}
+
+/// Stamps every node with its identity once the tree is built.
+fn assign_ids(nodes: &mut [Node], next: &mut usize) {
+    for node in nodes {
+        node.id = NodeId(*next);
+        *next += 1;
+        assign_ids(&mut node.children, next);
+    }
 }

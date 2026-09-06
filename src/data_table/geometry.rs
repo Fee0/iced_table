@@ -153,6 +153,24 @@ pub(crate) fn divider_at(widths: &[f32], x: f32, grab: f32) -> Option<usize> {
     None
 }
 
+/// The index of the column containing content-space `x`.
+///
+/// Returns `None` left of the first column or past the last one, so a click in
+/// the reserved scrollbar gutter never lands on a column.
+pub(crate) fn column_at(widths: &[f32], x: f32) -> Option<usize> {
+    if x < 0.0 {
+        return None;
+    }
+    let mut edge = 0.0;
+    for (index, width) in widths.iter().enumerate() {
+        edge += width;
+        if x < edge {
+            return Some(index);
+        }
+    }
+    None
+}
+
 /// The half-open range of row indices intersecting the visible body.
 ///
 /// `body_height` is the viewport height minus the header. The range is clamped
@@ -350,6 +368,24 @@ mod tests {
         assert_eq!(divider_at(&widths, 0.0, 4.0), None);
         // Too far from any edge.
         assert_eq!(divider_at(&widths, 130.0, 4.0), None);
+    }
+
+    #[test]
+    fn column_at_finds_the_column_containing_x() {
+        let widths = [100.0, 50.0, 30.0];
+        assert_eq!(column_at(&widths, 0.0), Some(0));
+        assert_eq!(column_at(&widths, 99.9), Some(0));
+        assert_eq!(column_at(&widths, 100.0), Some(1));
+        assert_eq!(column_at(&widths, 149.9), Some(1));
+        assert_eq!(column_at(&widths, 150.0), Some(2));
+    }
+
+    #[test]
+    fn column_at_returns_none_outside_the_columns() {
+        let widths = [100.0, 50.0];
+        assert_eq!(column_at(&widths, -1.0), None);
+        assert_eq!(column_at(&widths, 150.0), None);
+        assert_eq!(column_at(&[], 0.0), None);
     }
 
     #[test]

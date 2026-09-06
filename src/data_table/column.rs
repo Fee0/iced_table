@@ -28,6 +28,11 @@ pub struct Column {
     /// Usually the first column. The widget draws the affordance here; folder
     /// semantics remain a consumer concern.
     pub tree_column: bool,
+    /// Whether clicking this column's header sorts the table by it.
+    ///
+    /// A sortable column always reserves room for the sort indicator at its
+    /// trailing edge, so the header text does not shift when it becomes sorted.
+    pub sortable: bool,
     /// Font override for every cell and the header in this column.
     ///
     /// When `None` the table falls back to the `font_ui` / `font_editor` fonts
@@ -45,6 +50,7 @@ impl Column {
             min_width: DEFAULT_MIN_WIDTH,
             align: CellAlign::Start,
             tree_column: false,
+            sortable: false,
             font: None,
         }
     }
@@ -70,6 +76,15 @@ impl Column {
     /// Marks this column as the tree column (indent + chevron host).
     pub fn tree_column(mut self, tree_column: bool) -> Self {
         self.tree_column = tree_column;
+        self
+    }
+
+    /// Makes this column sortable by clicking its header.
+    ///
+    /// The table only reports the sort the click implies; the consumer reorders
+    /// its own data. See [`DataTable::on_sort`](crate::DataTable::on_sort).
+    pub fn sortable(mut self, sortable: bool) -> Self {
+        self.sortable = sortable;
         self
     }
 

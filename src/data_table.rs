@@ -6,10 +6,12 @@
 //! virtualization, column resizing, scrolling, and hover/active highlighting.
 
 pub mod cell;
+mod chevron;
 pub mod column;
 mod geometry;
 pub mod row;
 mod scrollbar;
+pub mod sort;
 pub mod style;
 
 use std::cell::RefCell;
@@ -29,13 +31,14 @@ use iced::advanced::widget::{Tree, tree};
 use iced::alignment::Vertical;
 use iced::keyboard;
 use iced::mouse;
-use iced::widget::canvas::{Cache, Frame, Path, Text};
-use iced::{Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size, Vector, font};
+use iced::widget::canvas::{Cache, Frame, Text};
+use iced::{Element, Event, Font, Length, Pixels, Point, Rectangle, Size, Vector, font};
 
 use crate::data_table::cell::{Cell, FontKind, TextRole, Weight};
 use crate::data_table::column::{CellAlign, Column};
 use crate::data_table::row::{Row, Toggle};
 use crate::data_table::scrollbar::{Axis, Scrollbar};
+use crate::data_table::sort::Sort;
 use crate::data_table::style::{Catalog, Status, Style, StyleFn};
 
 const DEFAULT_ROW_HEIGHT: f32 = 24.0;
@@ -83,12 +86,16 @@ where
     font_ui: Font,
     font_editor: Font,
     active_row: Option<usize>,
+    sort: Option<Sort>,
     target_scroll_row: Option<usize>,
     on_row_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
     on_toggle_press: Option<Box<dyn Fn(usize) -> Message + 'a>>,
     on_hover: Option<Box<dyn Fn(Option<usize>) -> Message + 'a>>,
+    on_sort: Option<Box<dyn Fn(Sort) -> Message + 'a>>,
     chevron_svg_collapsed: Option<svg::Handle>,
     chevron_svg_expanded: Option<svg::Handle>,
+    sort_chevron_svg_ascending: Option<svg::Handle>,
+    sort_chevron_svg_descending: Option<svg::Handle>,
     class: Theme::Class<'a>,
 }
 
@@ -121,12 +128,16 @@ where
             font_ui: Font::DEFAULT,
             font_editor: Font::MONOSPACE,
             active_row: None,
+            sort: None,
             target_scroll_row: None,
             on_row_press: None,
             on_toggle_press: None,
             on_hover: None,
+            on_sort: None,
             chevron_svg_collapsed: None,
             chevron_svg_expanded: None,
+            sort_chevron_svg_ascending: None,
+            sort_chevron_svg_descending: None,
             class: Theme::default(),
         }
     }
@@ -229,6 +240,14 @@ where
         self
     }
 
+    /// Sets the column the consumer has sorted its rows by, if any.
+    ///
+    /// Only drives the header indicator — the consumer reorders its own rows.
+    pub fn sort(mut self, sort: Option<Sort>) -> Self {
+        self.sort = sort;
+        self
+    }
+
     /// Scrolls to make `row` visible the first time this target is applied.
     /// Subsequent frames with the same target are ignored so the user can
     /// scroll freely after the initial jump. Pass `None` to clear the target.
@@ -246,6 +265,18 @@ where
     /// Sets the collapse/expand hook fired when a chevron is pressed.
     pub fn on_toggle_press(mut self, callback: impl Fn(usize) -> Message + 'a) -> Self {
         self.on_toggle_press = Some(Box::new(callback));
+        self
+    }
+
+    /// Sets the callback fired when a [`sortable`](crate::Column::sortable)
+    /// column's header is pressed.
+    ///
+    /// The payload is the sort the press implies: the first press on a column
+    /// sorts it descending, a further press on the same column reverses it. The
+    /// consumer reorders its rows and feeds the value back through
+    /// [`sort`](Self::sort).
+    pub fn on_sort(mut self, callback: impl Fn(Sort) -> Message + 'a) -> Self {
+        self.on_sort = Some(Box::new(callback));
         self
     }
 
@@ -285,6 +316,16 @@ where
     pub fn chevron_svg(mut self, collapsed: svg::Handle, expanded: svg::Handle) -> Self {
         self.chevron_svg_collapsed = Some(collapsed);
         self.chevron_svg_expanded = Some(expanded);
+        self
+    }
+
+    /// Replaces the path-drawn sort indicator with SVG icons.
+    ///
+    /// `ascending` is shown on a column sorted smallest-first; `descending` on
+    /// one sorted largest-first.
+    pub fn sort_chevron_svg(mut self, ascending: svg::Handle, descending: svg::Handle) -> Self {
+        self.sort_chevron_svg_ascending = Some(ascending);
+        self.sort_chevron_svg_descending = Some(descending);
         self
     }
 
@@ -443,8 +484,19 @@ where
             column.header.hash(&mut hasher);
             column.align.hash(&mut hasher);
             column.tree_column.hash(&mut hasher);
+            column.sortable.hash(&mut hasher);
             column.font.hash(&mut hasher);
         }
+        hasher.finish()
+    }
+
+    /// Hashes the sort state and the glyphs its indicator is drawn with, so the
+    /// header layer repaints when the indicator moves, flips, or changes artwork.
+    fn sort_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.sort.hash(&mut hasher);
+        self.sort_chevron_svg_ascending.hash(&mut hasher);
+        self.sort_chevron_svg_descending.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -480,6 +532,11 @@ where
     /// The tree column index, if any column hosts the collapse affordance.
     fn tree_column(&self) -> Option<usize> {
         self.columns.iter().position(|column| column.tree_column)
+    }
+
+    /// The index of the sortable column at content-space `x`, if any.
+    fn sortable_column_at(&self, widths: &[f32], x: f32) -> Option<usize> {
+        geometry::column_at(widths, x).filter(|&column| self.columns[column].sortable)
     }
 
     /// The local hit rectangle of a row's chevron in content space (the x is the
@@ -607,6 +664,8 @@ struct CacheKeys {
     columns: u64,
     /// Hash of the row content that was actually painted.
     rows: u64,
+    /// Hash of the sort state and the glyphs its indicator is drawn with.
+    sort: u64,
     sizing: Sizing,
     total_rows: usize,
     row_offset: usize,
@@ -639,6 +698,7 @@ impl CacheKeys {
         Self {
             columns: 0,
             rows: 0,
+            sort: 0,
             // NaN never compares equal, so this alone guarantees the first draw.
             sizing: Sizing {
                 row_height: f32::NAN,
@@ -689,6 +749,8 @@ struct Painter<'p> {
     font_editor: Font,
     chevron_svg_collapsed: Option<svg::Handle>,
     chevron_svg_expanded: Option<svg::Handle>,
+    sort_chevron_svg_ascending: Option<svg::Handle>,
+    sort_chevron_svg_descending: Option<svg::Handle>,
 }
 
 impl Painter<'_> {
@@ -782,33 +844,22 @@ impl Painter<'_> {
             |painter, frame| {
                 painter.indent_guides(frame, left, row.depth, center_y);
                 if row.toggle != Toggle::None {
-                    let color = painter.style.text_color(TextRole::Primary, status);
-                    let glyph_left =
-                        content_left + (painter.chevron_box - painter.chevron_glyph) / 2.0;
-                    let svg_handle = match row.toggle {
-                        Toggle::Collapsed => painter.chevron_svg_collapsed.as_ref(),
-                        Toggle::Expanded => painter.chevron_svg_expanded.as_ref(),
-                        Toggle::None => None,
+                    let (direction, handle) = match row.toggle {
+                        Toggle::Collapsed => {
+                            (chevron::Direction::Right, &painter.chevron_svg_collapsed)
+                        }
+                        Toggle::Expanded => {
+                            (chevron::Direction::Down, &painter.chevron_svg_expanded)
+                        }
+                        Toggle::None => unreachable!(),
                     };
-                    if let Some(handle) = svg_handle {
-                        let size = painter.chevron_glyph;
-                        let bounds = Rectangle {
-                            x: glyph_left,
-                            y: center_y - size / 2.0,
-                            width: size,
-                            height: size,
-                        };
-                        frame.draw_svg(bounds, svg::Svg::new(handle.clone()).color(color));
-                    } else {
-                        draw_chevron(
-                            frame,
-                            glyph_left,
-                            center_y,
-                            row.toggle == Toggle::Expanded,
-                            color,
-                            painter.chevron_glyph,
-                        );
-                    }
+                    chevron::draw(
+                        frame,
+                        painter.glyph_bounds(content_left, painter.chevron_box, center_y),
+                        direction,
+                        painter.style.text_color(TextRole::Primary, status),
+                        handle.as_ref(),
+                    );
                 }
                 painter.text(
                     frame,
@@ -930,6 +981,58 @@ impl Painter<'_> {
         });
     }
 
+    /// Draws the sort indicator into the box every sortable header cell
+    /// reserves at its trailing edge.
+    #[allow(clippy::too_many_arguments)]
+    fn sort_indicator(
+        &self,
+        frame: &mut Frame,
+        left: f32,
+        width: f32,
+        center_y: f32,
+        direction: sort::Direction,
+        scroll_x: f32,
+        clip: Rectangle,
+    ) {
+        let box_left = left + width - self.chevron_box;
+        let (glyph, handle) = match direction {
+            sort::Direction::Ascending => {
+                (chevron::Direction::Up, &self.sort_chevron_svg_ascending)
+            }
+            sort::Direction::Descending => {
+                (chevron::Direction::Down, &self.sort_chevron_svg_descending)
+            }
+        };
+        self.clipped_cell(
+            frame,
+            box_left,
+            self.chevron_box,
+            center_y,
+            scroll_x,
+            clip,
+            |painter, frame| {
+                chevron::draw(
+                    frame,
+                    painter.glyph_bounds(box_left, painter.chevron_box, center_y),
+                    glyph,
+                    painter.style.text_color(TextRole::Primary, Status::Regular),
+                    handle.as_ref(),
+                );
+            },
+        );
+    }
+
+    /// The square the glyph occupies, centered within a `box_width`-wide slot
+    /// starting at `box_left`.
+    fn glyph_bounds(&self, box_left: f32, box_width: f32, center_y: f32) -> Rectangle {
+        Rectangle {
+            x: box_left + (box_width - self.chevron_glyph) / 2.0,
+            y: center_y - self.chevron_glyph / 2.0,
+            width: self.chevron_glyph,
+            height: self.chevron_glyph,
+        }
+    }
+
     fn indent_guides(&self, frame: &mut Frame, cell_left: f32, depth: u16, center_y: f32) {
         for ancestor in 0..depth {
             let x = cell_left
@@ -990,33 +1093,6 @@ fn clip_grew(previous: Rectangle, current: Rectangle) -> bool {
         && current.x + current.width <= previous.x + previous.width
         && current.y + current.height <= previous.y + previous.height;
     !contained
-}
-
-/// Draws a filled chevron triangle centered vertically on `center_y`.
-fn draw_chevron(
-    frame: &mut Frame,
-    x: f32,
-    center_y: f32,
-    expanded: bool,
-    color: Color,
-    glyph_size: f32,
-) {
-    let path = Path::new(|builder| {
-        if expanded {
-            builder.move_to(Point::new(x, center_y - glyph_size / 4.0));
-            builder.line_to(Point::new(x + glyph_size, center_y - glyph_size / 4.0));
-            builder.line_to(Point::new(
-                x + glyph_size / 2.0,
-                center_y + glyph_size / 2.0,
-            ));
-        } else {
-            builder.move_to(Point::new(x, center_y - glyph_size / 2.0));
-            builder.line_to(Point::new(x + glyph_size / 2.0, center_y));
-            builder.line_to(Point::new(x, center_y + glyph_size / 2.0));
-        }
-        builder.close();
-    });
-    frame.fill(&path, color);
 }
 
 impl<'a, Message, Theme> Widget<Message, Theme, iced::Renderer> for DataTable<'a, Message, Theme>
@@ -1114,6 +1190,8 @@ where
             font_editor: self.font_editor,
             chevron_svg_collapsed: self.chevron_svg_collapsed.clone(),
             chevron_svg_expanded: self.chevron_svg_expanded.clone(),
+            sort_chevron_svg_ascending: self.sort_chevron_svg_ascending.clone(),
+            sort_chevron_svg_descending: self.sort_chevron_svg_descending.clone(),
         };
 
         let header = state.cache_header.draw(renderer, bounds.size(), |frame| {
@@ -1363,12 +1441,11 @@ where
                     return;
                 }
 
-                if position.y < self.header_height
-                    && self.columns_resizable(&metrics, viewport_width)
-                {
+                if position.y < self.header_height {
                     let content_x = position.x + scroll_x;
-                    if let Some(border) =
-                        geometry::divider_at(&metrics.widths, content_x, self.divider_grab)
+                    if self.columns_resizable(&metrics, viewport_width)
+                        && let Some(border) =
+                            geometry::divider_at(&metrics.widths, content_x, self.divider_grab)
                     {
                         let border_x: f32 = metrics.widths[..=border].iter().sum();
                         state.drag = Some(Drag::Column {
@@ -1379,6 +1456,14 @@ where
                         shell.capture_event();
                         return;
                     }
+
+                    if let Some(callback) = &self.on_sort
+                        && let Some(column) = self.sortable_column_at(&metrics.widths, content_x)
+                    {
+                        shell.publish(callback(Sort::toggled(self.sort, column)));
+                        shell.capture_event();
+                    }
+                    return;
                 }
 
                 let Some(global) = geometry::row_at(
@@ -1449,12 +1534,21 @@ where
             return mouse::Interaction::Pointer;
         }
 
-        if position.y < self.header_height
-            && self.columns_resizable(&metrics, viewport_width)
-            && geometry::divider_at(&metrics.widths, position.x + scroll_x, self.divider_grab)
-                .is_some()
-        {
-            return mouse::Interaction::ResizingHorizontally;
+        if position.y < self.header_height {
+            let content_x = position.x + scroll_x;
+            if self.columns_resizable(&metrics, viewport_width)
+                && geometry::divider_at(&metrics.widths, content_x, self.divider_grab).is_some()
+            {
+                return mouse::Interaction::ResizingHorizontally;
+            }
+            if self.on_sort.is_some()
+                && self
+                    .sortable_column_at(&metrics.widths, content_x)
+                    .is_some()
+            {
+                return mouse::Interaction::Pointer;
+            }
+            return mouse::Interaction::Idle;
         }
 
         let over_row = geometry::row_at(
@@ -1551,6 +1645,7 @@ where
         let Extent { size, visible } = extent;
         let sizing = self.sizing();
         let columns_hash = self.columns_hash();
+        let sort_hash = self.sort_hash();
         let mut keys = state.keys.borrow_mut();
 
         // A style change (e.g. a theme switch) recolors every layer.
@@ -1574,6 +1669,7 @@ where
         let header_dirty = style_dirty
             || clip_dirty
             || keys.columns != columns_hash
+            || keys.sort != sort_hash
             || keys.sizing != sizing
             || keys.size != size
             || keys.widths != metrics.widths
@@ -1608,6 +1704,7 @@ where
         *keys = CacheKeys {
             columns: columns_hash,
             rows: rows_hash,
+            sort: sort_hash,
             sizing,
             total_rows: self.total_rows,
             row_offset: self.row_offset,
@@ -1651,6 +1748,8 @@ where
             style: &header_style,
             chevron_svg_collapsed: painter.chevron_svg_collapsed.clone(),
             chevron_svg_expanded: painter.chevron_svg_expanded.clone(),
+            sort_chevron_svg_ascending: painter.sort_chevron_svg_ascending.clone(),
+            sort_chevron_svg_descending: painter.sort_chevron_svg_descending.clone(),
             ..*painter
         };
 
@@ -1667,19 +1766,41 @@ where
             for (index, column) in self.columns.iter().enumerate() {
                 let left = geometry::column_left(painter.widths, index);
                 let width = painter.widths[index];
+                // A sortable column always reserves the indicator box, so its
+                // header text does not shift when the column becomes sorted.
+                let text_width = if column.sortable {
+                    (width - self.chevron_box).max(0.0)
+                } else {
+                    width
+                };
                 let header_cell = Cell::text(column.header.clone());
                 header_painter.cell(
                     frame,
                     &header_cell,
                     column.align,
                     left,
-                    width,
+                    text_width,
                     center_y,
                     Status::Regular,
                     column.font,
                     scroll_x,
                     region,
                 );
+
+                if let Some(sort) = self
+                    .sort
+                    .filter(|sort| sort.column == index && column.sortable)
+                {
+                    header_painter.sort_indicator(
+                        frame,
+                        left,
+                        width,
+                        center_y,
+                        sort.direction,
+                        scroll_x,
+                        region,
+                    );
+                }
             }
 
             painter.dividers(frame, 0.0, self.header_height);

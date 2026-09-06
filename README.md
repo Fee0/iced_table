@@ -6,6 +6,7 @@ A canvas-rendered `DataTable` widget for [iced](https://iced.rs) 0.14.
 
 - Row virtualization
 - Drag-to-resize columns
+- Sortable columns — click a header to sort, click again to reverse
 - Hover and active-row highlighting
 - Tree/hierarchy support — indent guides, expand/collapse chevrons
 - Zebra striping and themeable style
