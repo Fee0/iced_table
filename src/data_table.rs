@@ -69,7 +69,7 @@ where
     rows: Vec<Row<'a>>,
     row_offset: usize,
     total_rows: usize,
-    on_scroll: Option<Box<dyn Fn(f32) -> Message + 'a>>,
+    on_visible_rows: Option<Box<dyn Fn(Range<usize>) -> Message + 'a>>,
     row_height: f32,
     header_height: f32,
     text_size: f32,
@@ -112,7 +112,7 @@ where
             rows,
             row_offset: 0,
             total_rows,
-            on_scroll: None,
+            on_visible_rows: None,
             row_height: DEFAULT_ROW_HEIGHT,
             header_height: DEFAULT_HEADER_HEIGHT,
             text_size: DEFAULT_TEXT_SIZE,
@@ -297,8 +297,9 @@ where
 
     /// Sets the index of the first row in `rows` within the full dataset.
     ///
-    /// Use together with [`total_rows`](Self::total_rows) and [`on_scroll`](Self::on_scroll)
-    /// to pass a windowed subset of rows while keeping the scrollbar correct.
+    /// Use together with [`total_rows`](Self::total_rows) and
+    /// [`on_visible_rows`](Self::on_visible_rows) to pass a windowed subset of rows while keeping
+    /// the scrollbar correct.
     pub fn row_offset(mut self, offset: usize) -> Self {
         self.row_offset = offset;
         self
@@ -313,9 +314,11 @@ where
         self
     }
 
-    /// Sets a callback fired whenever the vertical scroll offset changes.
-    pub fn on_scroll(mut self, callback: impl Fn(f32) -> Message + 'a) -> Self {
-        self.on_scroll = Some(Box::new(callback));
+    /// Sets a callback fired with the dataset rows on screen whenever they change: on scrolling,
+    /// resizing, a clamp after the row count shrank, or a widget state reset. A windowed consumer
+    /// builds its row window around this range.
+    pub fn on_visible_rows(mut self, callback: impl Fn(Range<usize>) -> Message + 'a) -> Self {
+        self.on_visible_rows = Some(Box::new(callback));
         self
     }
 
@@ -585,6 +588,8 @@ struct State {
     scroll_x: f32,
     scroll_y: f32,
     applied_target_row: Option<usize>,
+    /// The visible rows last sent to [`DataTable::on_visible_rows`].
+    reported_rows: Option<Range<usize>>,
     hovered_row: Option<usize>,
     hovered_thumb: Option<Axis>,
     shift_held: bool,
@@ -603,6 +608,7 @@ impl Default for State {
             scroll_x: 0.0,
             scroll_y: 0.0,
             applied_target_row: None,
+            reported_rows: None,
             hovered_row: None,
             hovered_thumb: None,
             shift_held: false,
@@ -1129,12 +1135,16 @@ where
         _renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        if let Some(row) = self.target_scroll_row {
-            let state = tree.state.downcast_mut::<State>();
-            if state.applied_target_row != Some(row) {
+        let state = tree.state.downcast_mut::<State>();
+        match self.target_scroll_row {
+            Some(row) if state.applied_target_row != Some(row) => {
                 state.scroll_y = row as f32 * self.row_height;
                 state.applied_target_row = Some(row);
             }
+            Some(_) => {}
+            // Forgotten once the consumer drops the target, so a later jump to the same row
+            // scrolls again.
+            None => state.applied_target_row = None,
         }
         layout::atomic(limits, Length::Fill, Length::Fill)
     }
@@ -1257,6 +1267,88 @@ where
     ) {
         let bounds = layout.bounds();
         let state = tree.state.downcast_mut::<State>();
+        self.handle_event(state, event, bounds, cursor, shell);
+        self.report_visible_rows(state, bounds, shell);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _viewport: &Rectangle,
+        _renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        let state = tree.state.downcast_ref::<State>();
+        if let Some(drag) = &state.drag {
+            return match drag {
+                Drag::Column { .. } => mouse::Interaction::ResizingHorizontally,
+                Drag::Scroll { .. } => mouse::Interaction::Pointer,
+            };
+        }
+
+        let bounds = layout.bounds();
+        let Some(position) = cursor.position_in(bounds) else {
+            return mouse::Interaction::None;
+        };
+
+        let viewport_width = self.content_viewport_width(bounds);
+        let metrics = self.metrics(state, viewport_width);
+        let (scroll_x, scroll_y) =
+            self.scroll_offsets(state, &metrics, Size::new(viewport_width, bounds.height));
+
+        let (vertical, horizontal) = self.scrollbars(bounds.size(), &metrics, scroll_x, scroll_y);
+        let over_thumb = vertical.is_some_and(|bar| bar.thumb.contains(position))
+            || horizontal.is_some_and(|bar| bar.thumb.contains(position));
+        if over_thumb {
+            return mouse::Interaction::Pointer;
+        }
+
+        if position.y < self.header_height {
+            let content_x = position.x + scroll_x;
+            if self.columns_resizable(&metrics, viewport_width)
+                && geometry::divider_at(&metrics.widths, content_x, self.divider_grab).is_some()
+            {
+                return mouse::Interaction::ResizingHorizontally;
+            }
+            if self.on_sort.is_some()
+                && self
+                    .sortable_column_at(&metrics.widths, content_x)
+                    .is_some()
+            {
+                return mouse::Interaction::Pointer;
+            }
+            return mouse::Interaction::Idle;
+        }
+
+        let over_row = geometry::row_at(
+            position.y,
+            self.header_height,
+            self.row_height,
+            scroll_y,
+            self.total_rows,
+        )
+        .is_some();
+        if over_row && (self.on_row_press.is_some() || self.on_toggle_press.is_some()) {
+            return mouse::Interaction::Pointer;
+        }
+
+        mouse::Interaction::Idle
+    }
+}
+
+impl<'a, Message, Theme> DataTable<'a, Message, Theme>
+where
+    Theme: Catalog,
+{
+    fn handle_event(
+        &self,
+        state: &mut State,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+        shell: &mut Shell<'_, Message>,
+    ) {
         state.ensure_basis(&self.columns);
 
         // The events that need no layout math at all.
@@ -1325,11 +1417,6 @@ where
                 if next_x != state.scroll_x || next_y != state.scroll_y {
                     state.scroll_x = next_x;
                     state.scroll_y = next_y;
-                    if next_y != scroll_y
-                        && let Some(f) = &self.on_scroll
-                    {
-                        shell.publish(f(next_y));
-                    }
                     shell.capture_event();
                     shell.request_redraw();
                     self.handle_hover(state, &metrics, next_x, next_y, bounds, cursor, shell);
@@ -1371,12 +1458,7 @@ where
                         };
                         let offset = bar.offset_for_thumb(axis, content_len, lead);
                         match axis {
-                            Axis::Vertical => {
-                                state.scroll_y = offset;
-                                if let Some(f) = &self.on_scroll {
-                                    shell.publish(f(offset));
-                                }
-                            }
+                            Axis::Vertical => state.scroll_y = offset,
                             Axis::Horizontal => state.scroll_x = offset,
                         }
                         state.hovered_thumb = Some(axis);
@@ -1424,9 +1506,6 @@ where
                     let lead = position.y - thumb_half;
                     let new_y = bar.offset_for_thumb(Axis::Vertical, metrics.content_height, lead);
                     state.scroll_y = new_y;
-                    if let Some(f) = &self.on_scroll {
-                        shell.publish(f(new_y));
-                    }
                     state.drag = Some(Drag::Scroll {
                         axis: Axis::Vertical,
                         grab: thumb_half,
@@ -1513,76 +1592,33 @@ where
         }
     }
 
-    fn mouse_interaction(
+    /// Tells [`on_visible_rows`](Self::on_visible_rows) which rows are on screen whenever that
+    /// changes. Checked after every event, redraws included, so it also catches what no
+    /// interaction caused: a resize, a scroll clamped after the rows shrank, a scroll-to-row
+    /// jump, or state reset by a rebuilt widget tree.
+    fn report_visible_rows(
         &self,
-        tree: &Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-        _renderer: &iced::Renderer,
-    ) -> mouse::Interaction {
-        let state = tree.state.downcast_ref::<State>();
-        if let Some(drag) = &state.drag {
-            return match drag {
-                Drag::Column { .. } => mouse::Interaction::ResizingHorizontally,
-                Drag::Scroll { .. } => mouse::Interaction::Pointer,
-            };
-        }
-
-        let bounds = layout.bounds();
-        let Some(position) = cursor.position_in(bounds) else {
-            return mouse::Interaction::None;
+        state: &mut State,
+        bounds: Rectangle,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        let Some(callback) = &self.on_visible_rows else {
+            return;
         };
-
-        let viewport_width = self.content_viewport_width(bounds);
-        let metrics = self.metrics(state, viewport_width);
-        let (scroll_x, scroll_y) =
-            self.scroll_offsets(state, &metrics, Size::new(viewport_width, bounds.height));
-
-        let (vertical, horizontal) = self.scrollbars(bounds.size(), &metrics, scroll_x, scroll_y);
-        let over_thumb = vertical.is_some_and(|bar| bar.thumb.contains(position))
-            || horizontal.is_some_and(|bar| bar.thumb.contains(position));
-        if over_thumb {
-            return mouse::Interaction::Pointer;
-        }
-
-        if position.y < self.header_height {
-            let content_x = position.x + scroll_x;
-            if self.columns_resizable(&metrics, viewport_width)
-                && geometry::divider_at(&metrics.widths, content_x, self.divider_grab).is_some()
-            {
-                return mouse::Interaction::ResizingHorizontally;
-            }
-            if self.on_sort.is_some()
-                && self
-                    .sortable_column_at(&metrics.widths, content_x)
-                    .is_some()
-            {
-                return mouse::Interaction::Pointer;
-            }
-            return mouse::Interaction::Idle;
-        }
-
-        let over_row = geometry::row_at(
-            position.y,
-            self.header_height,
+        let body_height = self.body_height(bounds);
+        let max_y = geometry::max_scroll(self.total_rows, self.row_height, body_height);
+        let visible = geometry::visible_rows(
+            state.scroll_y.clamp(0.0, max_y),
+            body_height,
             self.row_height,
-            scroll_y,
             self.total_rows,
-        )
-        .is_some();
-        if over_row && (self.on_row_press.is_some() || self.on_toggle_press.is_some()) {
-            return mouse::Interaction::Pointer;
+        );
+        if state.reported_rows.as_ref() != Some(&visible) {
+            state.reported_rows = Some(visible.clone());
+            shell.publish(callback(visible));
         }
-
-        mouse::Interaction::Idle
     }
-}
 
-impl<'a, Message, Theme> DataTable<'a, Message, Theme>
-where
-    Theme: Catalog,
-{
     /// Updates the hovered row and hovered thumb from a non-dragging cursor move.
     #[allow(clippy::too_many_arguments)]
     fn handle_hover(
