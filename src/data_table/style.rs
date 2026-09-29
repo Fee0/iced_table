@@ -100,6 +100,20 @@ impl Style {
             }
         }
     }
+
+    /// The color a row in the given [`Status`] shows on screen.
+    ///
+    /// Hover and active fills are painted over the regular row fill, so a
+    /// translucent highlight is composited onto it here.
+    pub fn visible_row_background(&self, status: Status, row_index: usize) -> Color {
+        let regular = self
+            .row_background(Status::Regular, row_index)
+            .unwrap_or(self.row_background);
+        match self.row_background(status, row_index) {
+            Some(fill) if status != Status::Regular => over(fill, regular),
+            _ => regular,
+        }
+    }
 }
 
 /// The theme-side catalog that resolves a class into a [`Style`].
@@ -158,5 +172,85 @@ fn muted(color: Color, alpha: f32) -> Color {
     Color {
         a: color.a * alpha,
         ..color
+    }
+}
+
+/// Composites `top` onto `bottom` in linear space, as the GPU blends them.
+fn over(top: Color, bottom: Color) -> Color {
+    let [top_r, top_g, top_b, top_a] = top.into_linear();
+    let [bottom_r, bottom_g, bottom_b, bottom_a] = bottom.into_linear();
+    let alpha = top_a + bottom_a * (1.0 - top_a);
+    if alpha <= 0.0 {
+        return Color::TRANSPARENT;
+    }
+    let mix = |top: f32, bottom: f32| (top * top_a + bottom * bottom_a * (1.0 - top_a)) / alpha;
+    Color::from_linear_rgba(
+        mix(top_r, bottom_r),
+        mix(top_g, bottom_g),
+        mix(top_b, bottom_b),
+        alpha,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOLERANCE: f32 = 1e-4;
+
+    fn assert_close(actual: Color, expected: Color) {
+        let pairs = [
+            (actual.r, expected.r),
+            (actual.g, expected.g),
+            (actual.b, expected.b),
+            (actual.a, expected.a),
+        ];
+        for (actual_channel, expected_channel) in pairs {
+            assert!(
+                (actual_channel - expected_channel).abs() < TOLERANCE,
+                "{actual:?} != {expected:?}"
+            );
+        }
+    }
+
+    fn style() -> Style {
+        default(&Theme::Dark, Status::Regular)
+    }
+
+    #[test]
+    fn opaque_highlight_hides_the_row_beneath() {
+        let style = Style {
+            hover_background: Color::from_rgb(0.2, 0.4, 0.6),
+            ..style()
+        };
+        assert_close(
+            style.visible_row_background(Status::Hovered, 0),
+            style.hover_background,
+        );
+    }
+
+    #[test]
+    fn translucent_highlight_blends_with_the_row_beneath() {
+        let style = Style {
+            row_background: Color::BLACK,
+            hover_background: Color::from_rgba(1.0, 1.0, 1.0, 0.5),
+            ..style()
+        };
+        let visible = style.visible_row_background(Status::Hovered, 0);
+        assert_close(visible, Color::from_linear_rgba(0.5, 0.5, 0.5, 1.0));
+    }
+
+    #[test]
+    fn regular_rows_show_their_zebra_band() {
+        let alternate = Color::from_rgb(0.1, 0.2, 0.3);
+        let style = Style {
+            row_background_alternate: Some(alternate),
+            ..style()
+        };
+        assert_close(style.visible_row_background(Status::Regular, 1), alternate);
+        assert_close(
+            style.visible_row_background(Status::Regular, 0),
+            style.row_background,
+        );
     }
 }

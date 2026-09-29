@@ -8,6 +8,7 @@
 pub mod cell;
 mod chevron;
 pub mod column;
+mod fade;
 mod geometry;
 pub mod row;
 mod scrollbar;
@@ -32,7 +33,7 @@ use iced::alignment::Vertical;
 use iced::keyboard;
 use iced::mouse;
 use iced::widget::canvas::{Cache, Frame, Text};
-use iced::{Element, Event, Font, Length, Pixels, Point, Rectangle, Size, Vector, font};
+use iced::{Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size, Vector, font};
 
 use crate::data_table::cell::{Cell, FontKind, TextRole, Weight};
 use crate::data_table::column::{CellAlign, Column};
@@ -53,6 +54,7 @@ const DEFAULT_SCROLLBAR_MIN_THUMB: f32 = 24.0;
 const DEFAULT_DIVIDER_GRAB: f32 = 4.0;
 const DEFAULT_DIVIDER_WIDTH: f32 = 1.0;
 const DEFAULT_INDENT_GUIDE_WIDTH: f32 = 1.0;
+const DEFAULT_OVERFLOW_FADE: f32 = 24.0;
 
 /// A reusable, canvas-rendered table generic over its `Theme`.
 ///
@@ -83,6 +85,7 @@ where
     divider_grab: f32,
     divider_width: f32,
     indent_guide_width: f32,
+    overflow_fade: f32,
     reserve_scrollbar_gutter: bool,
     font_ui: Font,
     font_editor: Font,
@@ -126,6 +129,7 @@ where
             divider_grab: DEFAULT_DIVIDER_GRAB,
             divider_width: DEFAULT_DIVIDER_WIDTH,
             indent_guide_width: DEFAULT_INDENT_GUIDE_WIDTH,
+            overflow_fade: DEFAULT_OVERFLOW_FADE,
             reserve_scrollbar_gutter: false,
             font_ui: Font::DEFAULT,
             font_editor: Font::MONOSPACE,
@@ -228,6 +232,14 @@ where
     /// Sets the tree indent guide line thickness in pixels.
     pub fn indent_guide_width(mut self, indent_guide_width: f32) -> Self {
         self.indent_guide_width = indent_guide_width;
+        self
+    }
+
+    /// Sets how many pixels text fades out over where it runs past the edge of
+    /// its cell, so it does not blur into the neighbouring column. `0.0`
+    /// disables the fade; overflowing text is then cut off hard.
+    pub fn overflow_fade(mut self, overflow_fade: f32) -> Self {
+        self.overflow_fade = overflow_fade;
         self
     }
 
@@ -483,6 +495,7 @@ where
             scrollbar_thumb_thickness: self.scrollbar_thumb_thickness,
             divider_width: self.divider_width,
             indent_guide_width: self.indent_guide_width,
+            overflow_fade: self.overflow_fade,
             reserve_scrollbar_gutter: self.reserve_scrollbar_gutter,
         }
     }
@@ -596,7 +609,9 @@ struct State {
     basis: Vec<f32>,
     drag: Option<Drag>,
     cache_header: Cache,
+    cache_header_fade: Cache,
     cache_rows: Cache,
+    cache_rows_fade: Cache,
     cache_highlight: Cache,
     cache_overlay: Cache,
     keys: RefCell<CacheKeys>,
@@ -615,7 +630,9 @@ impl Default for State {
             basis: Vec::new(),
             drag: None,
             cache_header: Cache::new(),
+            cache_header_fade: Cache::new(),
             cache_rows: Cache::new(),
+            cache_rows_fade: Cache::new(),
             cache_highlight: Cache::new(),
             cache_overlay: Cache::new(),
             keys: RefCell::new(CacheKeys::stale()),
@@ -657,7 +674,7 @@ struct Extent {
 
 /// Every pixel knob the cached layers lay themselves out with, bundled so they
 /// can be compared as one cache key. Consumers rarely change these, so treating
-/// a difference as invalidating all four layers costs nothing.
+/// a difference as invalidating every layer costs nothing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Sizing {
     row_height: f32,
@@ -672,6 +689,7 @@ struct Sizing {
     scrollbar_thumb_thickness: Option<f32>,
     divider_width: f32,
     indent_guide_width: f32,
+    overflow_fade: f32,
     reserve_scrollbar_gutter: bool,
 }
 
@@ -730,6 +748,7 @@ impl CacheKeys {
                 scrollbar_thumb_thickness: Some(f32::NAN),
                 divider_width: f32::NAN,
                 indent_guide_width: f32::NAN,
+                overflow_fade: f32::NAN,
                 reserve_scrollbar_gutter: false,
             },
             total_rows: 0,
@@ -763,6 +782,7 @@ struct Painter<'p> {
     chevron_glyph: f32,
     divider_width: f32,
     indent_guide_width: f32,
+    overflow_fade: f32,
     font_ui: Font,
     font_editor: Font,
     chevron_svg_collapsed: Option<svg::Handle>,
@@ -852,10 +872,11 @@ impl Painter<'_> {
         } else {
             content_left + self.chevron_box
         };
+        let (clip_left, clip_width) = self.content_span(left, width);
         self.clipped_cell(
             frame,
-            left,
-            width,
+            clip_left,
+            clip_width,
             center_y,
             scroll_x,
             clip,
@@ -911,10 +932,11 @@ impl Painter<'_> {
             CellAlign::Center => (left + width / 2.0, TextAlignment::Center),
             CellAlign::End => (left + width - self.cell_padding_x, TextAlignment::Right),
         };
+        let (clip_left, clip_width) = self.content_span(left, width);
         self.clipped_cell(
             frame,
-            left,
-            width,
+            clip_left,
+            clip_width,
             center_y,
             scroll_x,
             clip,
@@ -922,6 +944,67 @@ impl Painter<'_> {
                 painter.text(frame, cell, x, alignment, center_y, status, font_override);
             },
         );
+    }
+
+    /// The horizontal span a cell's content may occupy: the cell minus its
+    /// padding on both sides, so overflowing text always stops a full padding
+    /// short of the neighbouring column's content.
+    fn content_span(&self, left: f32, width: f32) -> (f32, f32) {
+        (
+            left + self.cell_padding_x,
+            (width - 2.0 * self.cell_padding_x).max(0.0),
+        )
+    }
+
+    /// Fades the content edges of every text cell in a row into `background`.
+    /// See [`fade`] for why this is drawn apart from the cell text.
+    fn row_fades(&self, frame: &mut Frame, row: &Row, top_y: f32, background: Color) {
+        for (index, column) in self.columns.iter().enumerate() {
+            if !matches!(row.cells[index], Cell::Text { .. }) {
+                continue;
+            }
+            // The tree column always draws its text start-aligned.
+            let align = if column.tree_column {
+                CellAlign::Start
+            } else {
+                column.align
+            };
+            let left = geometry::column_left(self.widths, index);
+            self.cell_fade(
+                frame,
+                left,
+                self.widths[index],
+                top_y,
+                self.row_height,
+                align,
+                background,
+            );
+        }
+    }
+
+    /// Fades the content edges of one cell spanning `[top_y, top_y + height]`.
+    #[allow(clippy::too_many_arguments)]
+    fn cell_fade(
+        &self,
+        frame: &mut Frame,
+        left: f32,
+        width: f32,
+        top_y: f32,
+        height: f32,
+        align: CellAlign,
+        background: Color,
+    ) {
+        let (content_left, content_width) = self.content_span(left, width);
+        // Inset so the fade never paints over a horizontal divider on the
+        // row's edge; text never reaches that far anyway.
+        let inset = self.divider_width / 2.0;
+        let content = Rectangle {
+            x: content_left,
+            y: top_y + inset,
+            width: content_width,
+            height: (height - 2.0 * inset).max(0.0),
+        };
+        fade::draw(frame, content, align, self.overflow_fade, background);
     }
 
     /// Clips `f`'s drawing to a single cell rectangle, intersected with `clip`
@@ -1208,6 +1291,7 @@ where
             chevron_glyph: self.chevron_glyph,
             divider_width: self.divider_width,
             indent_guide_width: self.indent_guide_width,
+            overflow_fade: self.overflow_fade,
             font_ui: self.font_ui,
             font_editor: self.font_editor,
             chevron_svg_collapsed: self.chevron_svg_collapsed.clone(),
@@ -1219,9 +1303,26 @@ where
         let header = state.cache_header.draw(renderer, bounds.size(), |frame| {
             self.draw_header(frame, &painter, bounds, scroll_x);
         });
+        let header_fades = state
+            .cache_header_fade
+            .draw(renderer, bounds.size(), |frame| {
+                self.draw_header_fades(frame, &painter, bounds, scroll_x);
+            });
         let rows = state.cache_rows.draw(renderer, bounds.size(), |frame| {
             self.draw_rows(frame, &painter, bounds, scroll_x, scroll_y);
         });
+        let row_fades = state
+            .cache_rows_fade
+            .draw(renderer, bounds.size(), |frame| {
+                self.draw_row_fades(
+                    frame,
+                    &painter,
+                    bounds,
+                    scroll_x,
+                    scroll_y,
+                    state.hovered_row,
+                );
+            });
         let highlight = state
             .cache_highlight
             .draw(renderer, bounds.size(), |frame| {
@@ -1246,11 +1347,24 @@ where
             );
         });
 
-        renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
+        let origin = Vector::new(bounds.x, bounds.y);
+        renderer.with_translation(origin, |renderer| {
             renderer.draw_geometry(header);
             renderer.draw_geometry(rows);
             renderer.draw_geometry(highlight);
-            renderer.draw_geometry(overlay);
+        });
+
+        // A layer draws its text after all of its meshes, so the fades and
+        // scrollbars need a layer of their own to land on top of the cell text.
+        let Some(visible_bounds) = bounds.intersection(viewport) else {
+            return;
+        };
+        renderer.with_layer(visible_bounds, |renderer| {
+            renderer.with_translation(origin, |renderer| {
+                renderer.draw_geometry(header_fades);
+                renderer.draw_geometry(row_fades);
+                renderer.draw_geometry(overlay);
+            });
         });
     }
 
@@ -1741,9 +1855,13 @@ where
         }
         if header_dirty {
             state.cache_header.clear();
+            state.cache_header_fade.clear();
         }
         if highlight_dirty {
             state.cache_highlight.clear();
+            // Each row fades into the background its status shows, so the row
+            // fades follow the highlight rather than the regular rows.
+            state.cache_rows_fade.clear();
         }
         if overlay_dirty {
             state.cache_overlay.clear();
@@ -1814,13 +1932,7 @@ where
             for (index, column) in self.columns.iter().enumerate() {
                 let left = geometry::column_left(painter.widths, index);
                 let width = painter.widths[index];
-                // A sortable column always reserves the indicator box, so its
-                // header text does not shift when the column becomes sorted.
-                let text_width = if column.sortable {
-                    (width - self.chevron_box).max(0.0)
-                } else {
-                    width
-                };
+                let text_width = self.header_text_width(column, width);
                 let header_cell = Cell::text(column.header.clone());
                 header_painter.cell(
                     frame,
@@ -1862,6 +1974,46 @@ where
                 color,
             );
         }
+    }
+
+    /// The width of a header cell's text slot. A sortable column always
+    /// reserves the indicator box, so its header text does not shift when the
+    /// column becomes sorted.
+    fn header_text_width(&self, column: &Column, width: f32) -> f32 {
+        if column.sortable {
+            (width - self.chevron_box).max(0.0)
+        } else {
+            width
+        }
+    }
+
+    fn draw_header_fades(
+        &self,
+        frame: &mut Frame,
+        painter: &Painter,
+        bounds: Rectangle,
+        scroll_x: f32,
+    ) {
+        let region = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: bounds.width,
+            height: self.header_height,
+        };
+        frame.with_clip(region, |frame| {
+            frame.translate(Vector::new(-scroll_x, 0.0));
+            for (index, column) in self.columns.iter().enumerate() {
+                painter.cell_fade(
+                    frame,
+                    geometry::column_left(painter.widths, index),
+                    self.header_text_width(column, painter.widths[index]),
+                    0.0,
+                    self.header_height,
+                    column.align,
+                    painter.style.header_background,
+                );
+            }
+        });
     }
 
     fn draw_rows(
@@ -1960,6 +2112,44 @@ where
             }
             if active.is_some() || hovered.is_some() {
                 painter.dividers(frame, self.header_height, self.body_height(bounds));
+            }
+        });
+    }
+
+    fn draw_row_fades(
+        &self,
+        frame: &mut Frame,
+        painter: &Painter,
+        bounds: Rectangle,
+        scroll_x: f32,
+        scroll_y: f32,
+        hovered_row: Option<usize>,
+    ) {
+        let body = Rectangle {
+            x: 0.0,
+            y: self.header_height,
+            width: bounds.width,
+            height: self.body_height(bounds),
+        };
+        frame.with_clip(body, |frame| {
+            frame.translate(Vector::new(-scroll_x, 0.0));
+
+            for global in self.drawn_rows(bounds, scroll_y) {
+                // Hover wins over active, matching `draw_highlight`.
+                let status = if hovered_row == Some(global) {
+                    Status::Hovered
+                } else if self.active_row == Some(global) {
+                    Status::Active
+                } else {
+                    Status::Regular
+                };
+                let top_y = self.header_height + global as f32 * self.row_height - scroll_y;
+                painter.row_fades(
+                    frame,
+                    &self.rows[global - self.row_offset],
+                    top_y,
+                    painter.style.visible_row_background(status, global),
+                );
             }
         });
     }
