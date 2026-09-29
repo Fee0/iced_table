@@ -54,7 +54,7 @@ const DEFAULT_SCROLLBAR_MIN_THUMB: f32 = 24.0;
 const DEFAULT_DIVIDER_GRAB: f32 = 4.0;
 const DEFAULT_DIVIDER_WIDTH: f32 = 1.0;
 const DEFAULT_INDENT_GUIDE_WIDTH: f32 = 1.0;
-const DEFAULT_OVERFLOW_FADE: f32 = 24.0;
+const DEFAULT_OVERFLOW_FADE: f32 = 18.0;
 
 /// A reusable, canvas-rendered table generic over its `Theme`.
 ///
