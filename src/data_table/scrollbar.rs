@@ -112,18 +112,49 @@ impl Scrollbar {
     }
 }
 
-/// Fills the track and thumb of `bar`.
-pub(crate) fn draw(frame: &mut Frame, bar: &Scrollbar, track: Color, thumb: Color) {
+/// Fills the track and thumb of `bar`. `thumb_thickness` narrows the thumb
+/// across the axis, centered in the track; `None` fills the track.
+pub(crate) fn draw(
+    frame: &mut Frame,
+    axis: Axis,
+    bar: &Scrollbar,
+    thumb_thickness: Option<f32>,
+    track: Color,
+    thumb: Color,
+) {
     frame.fill_rectangle(
         Point::new(bar.track.x, bar.track.y),
         Size::new(bar.track.width, bar.track.height),
         track,
     );
+    let rect = thumb_thickness.map_or(bar.thumb, |t| centered_thumb(axis, bar.thumb, t));
     frame.fill_rectangle(
-        Point::new(bar.thumb.x, bar.thumb.y),
-        Size::new(bar.thumb.width, bar.thumb.height),
+        Point::new(rect.x, rect.y),
+        Size::new(rect.width, rect.height),
         thumb,
     );
+}
+
+/// `thumb` narrowed to `thickness` across `axis`, centered on its original extent.
+fn centered_thumb(axis: Axis, thumb: Rectangle, thickness: f32) -> Rectangle {
+    match axis {
+        Axis::Vertical => {
+            let width = thickness.clamp(0.0, thumb.width);
+            Rectangle {
+                x: thumb.x + (thumb.width - width) / 2.0,
+                width,
+                ..thumb
+            }
+        }
+        Axis::Horizontal => {
+            let height = thickness.clamp(0.0, thumb.height);
+            Rectangle {
+                y: thumb.y + (thumb.height - height) / 2.0,
+                height,
+                ..thumb
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -210,5 +241,15 @@ mod tests {
         let bar = Scrollbar::new(axis, track(axis, 500.0), content, 120.0, 24.0).unwrap();
         let recovered = bar.offset_for_thumb(axis, content, bar.thumb.y);
         assert!((recovered - 120.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn thumb_thickness_centers_across_the_axis() {
+        let axis = Axis::Vertical;
+        let bar = Scrollbar::new(axis, track(axis, 500.0), 1000.0, 0.0, 24.0).unwrap();
+        let thin = centered_thumb(axis, bar.thumb, 4.0);
+        assert!((thin.width - 4.0).abs() < 1e-3);
+        assert!((thin.x - 203.0).abs() < 1e-3);
+        assert!((thin.height - bar.thumb.height).abs() < 1e-3);
     }
 }

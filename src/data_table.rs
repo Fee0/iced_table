@@ -79,6 +79,7 @@ where
     chevron_glyph: f32,
     scrollbar_thickness: f32,
     scrollbar_min_thumb: f32,
+    scrollbar_thumb_thickness: Option<f32>,
     divider_grab: f32,
     divider_width: f32,
     indent_guide_width: f32,
@@ -121,6 +122,7 @@ where
             chevron_glyph: DEFAULT_CHEVRON_GLYPH,
             scrollbar_thickness: DEFAULT_SCROLLBAR_THICKNESS,
             scrollbar_min_thumb: DEFAULT_SCROLLBAR_MIN_THUMB,
+            scrollbar_thumb_thickness: None,
             divider_grab: DEFAULT_DIVIDER_GRAB,
             divider_width: DEFAULT_DIVIDER_WIDTH,
             indent_guide_width: DEFAULT_INDENT_GUIDE_WIDTH,
@@ -193,6 +195,13 @@ where
     /// Sets the minimum scrollbar thumb length so it stays grabbable with huge content.
     pub fn scrollbar_min_thumb(mut self, scrollbar_min_thumb: f32) -> Self {
         self.scrollbar_min_thumb = scrollbar_min_thumb;
+        self
+    }
+
+    /// Sets the drawn thumb thickness, centered in the track. Defaults to the
+    /// full track thickness. The whole track width stays grabbable.
+    pub fn scrollbar_thumb_thickness(mut self, scrollbar_thumb_thickness: f32) -> Self {
+        self.scrollbar_thumb_thickness = Some(scrollbar_thumb_thickness);
         self
     }
 
@@ -468,6 +477,7 @@ where
             chevron_glyph: self.chevron_glyph,
             scrollbar_thickness: self.scrollbar_thickness,
             scrollbar_min_thumb: self.scrollbar_min_thumb,
+            scrollbar_thumb_thickness: self.scrollbar_thumb_thickness,
             divider_width: self.divider_width,
             indent_guide_width: self.indent_guide_width,
             reserve_scrollbar_gutter: self.reserve_scrollbar_gutter,
@@ -653,6 +663,7 @@ struct Sizing {
     chevron_glyph: f32,
     scrollbar_thickness: f32,
     scrollbar_min_thumb: f32,
+    scrollbar_thumb_thickness: Option<f32>,
     divider_width: f32,
     indent_guide_width: f32,
     reserve_scrollbar_gutter: bool,
@@ -710,6 +721,7 @@ impl CacheKeys {
                 chevron_glyph: f32::NAN,
                 scrollbar_thickness: f32::NAN,
                 scrollbar_min_thumb: f32::NAN,
+                scrollbar_thumb_thickness: Some(f32::NAN),
                 divider_width: f32::NAN,
                 indent_guide_width: f32::NAN,
                 reserve_scrollbar_gutter: false,
@@ -1937,7 +1949,14 @@ where
             } else {
                 style.scrollbar_thumb
             };
-            scrollbar::draw(frame, &bar, style.scrollbar_track, thumb);
+            scrollbar::draw(
+                frame,
+                axis,
+                &bar,
+                self.scrollbar_thumb_thickness,
+                style.scrollbar_track,
+                thumb,
+            );
         }
         if let Some(color) = style.border {
             let w = self.divider_width;
