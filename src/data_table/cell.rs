@@ -70,6 +70,14 @@ pub enum TextRole {
     Accent,
     /// De-emphasized text (e.g. an address).
     Muted,
+    /// Neutral status text (e.g. an info log level).
+    Info,
+    /// Positive status text.
+    Success,
+    /// Cautionary status text.
+    Warning,
+    /// Failure status text.
+    Error,
 }
 
 /// Font weight for a text cell.

@@ -48,6 +48,14 @@ pub struct Style {
     pub text_accent: Color,
     /// [`TextRole::Muted`] color on a regular row.
     pub text_muted: Color,
+    /// [`TextRole::Info`] color on a regular row.
+    pub text_info: Color,
+    /// [`TextRole::Success`] color on a regular row.
+    pub text_success: Color,
+    /// [`TextRole::Warning`] color on a regular row.
+    pub text_warning: Color,
+    /// [`TextRole::Error`] color on a regular row.
+    pub text_error: Color,
     /// Text color used for every text role on a hovered row.
     pub text_on_hover: Color,
     /// Text color used for every text role on the active row.
@@ -80,6 +88,10 @@ impl Style {
                 TextRole::Primary => self.text_primary,
                 TextRole::Accent => self.text_accent,
                 TextRole::Muted => self.text_muted,
+                TextRole::Info => self.text_info,
+                TextRole::Success => self.text_success,
+                TextRole::Warning => self.text_warning,
+                TextRole::Error => self.text_error,
             },
         }
     }
@@ -156,6 +168,10 @@ pub fn default(theme: &Theme, _status: Status) -> Style {
         text_primary: palette.background.base.text,
         text_accent: palette.primary.base.color,
         text_muted: muted(palette.background.base.text, 0.6),
+        text_info: palette.primary.base.color,
+        text_success: palette.success.base.color,
+        text_warning: palette.warning.base.color,
+        text_error: palette.danger.base.color,
         text_on_hover: palette.background.weak.text,
         text_on_active: palette.primary.strong.text,
         scrollbar_track: palette.background.weak.color,
