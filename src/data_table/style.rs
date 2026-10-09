@@ -40,7 +40,8 @@ pub struct Style {
     pub active_background: Color,
     /// Vertical column divider color.
     pub divider: Color,
-    /// Indent guide color in the tree column.
+    /// Indent guide color in the tree column on a regular row. Hovered and
+    /// active rows draw their guides in `text_on_hover` / `text_on_active`.
     pub indent_guide: Color,
     /// [`TextRole::Primary`] color on a regular row.
     pub text_primary: Color,
@@ -93,6 +94,15 @@ impl Style {
                 TextRole::Warning => self.text_warning,
                 TextRole::Error => self.text_error,
             },
+        }
+    }
+
+    /// The indent guide color for a row in the given [`Status`].
+    pub fn indent_guide_color(&self, status: Status) -> Color {
+        match status {
+            Status::Hovered => self.text_on_hover,
+            Status::Active => self.text_on_active,
+            Status::Regular => self.indent_guide,
         }
     }
 

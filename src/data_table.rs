@@ -881,7 +881,7 @@ impl Painter<'_> {
             scroll_x,
             clip,
             |painter, frame| {
-                painter.indent_guides(frame, left, row.depth, center_y);
+                painter.indent_guides(frame, left, row.depth, center_y, status);
                 if row.toggle != Toggle::None {
                     let (direction, handle) = match row.toggle {
                         Toggle::Collapsed => {
@@ -1134,7 +1134,15 @@ impl Painter<'_> {
         }
     }
 
-    fn indent_guides(&self, frame: &mut Frame, cell_left: f32, depth: u16, center_y: f32) {
+    fn indent_guides(
+        &self,
+        frame: &mut Frame,
+        cell_left: f32,
+        depth: u16,
+        center_y: f32,
+        status: Status,
+    ) {
+        let color = self.style.indent_guide_color(status);
         for ancestor in 0..depth {
             let x = cell_left
                 + self.cell_padding_x
@@ -1143,7 +1151,7 @@ impl Painter<'_> {
             frame.fill_rectangle(
                 Point::new(x, center_y - self.row_height / 2.0),
                 Size::new(self.indent_guide_width, self.row_height),
-                self.style.indent_guide,
+                color,
             );
         }
     }
